@@ -32,7 +32,7 @@ jobs:
         run: test "$(git -C "$(west list zephyr -f '{abspath}')" rev-parse HEAD)" = 8dafb9a897da0f79a1a3724a108b21fc28719915
       - name: Build firmware
         working-directory: foc_motor
-        run: west build -p always -b foc_motor -d build/arm .
+        run: west build -p always -b foc_motor -d build/arm . -- -DBUILD_VERSION=v4.4.0-12700-g8dafb9a897da
       - name: Check artifacts and budgets
         working-directory: foc_motor
         shell: bash
@@ -57,6 +57,7 @@ jobs:
           grep -qx 'CONFIG_SYSTEM_WORKQUEUE_STACK_SIZE=512' build/arm/zephyr/.config
           grep -qx 'CONFIG_LOG_PROCESS_THREAD_STACK_SIZE=768' build/arm/zephyr/.config
           grep -qx 'CONFIG_HW_STACK_PROTECTION=y' build/arm/zephyr/.config
+          grep -qx '#define BUILD_VERSION v4.4.0-12700-g8dafb9a897da' build/arm/zephyr/include/generated/zephyr/version.h
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: foc_motor-arm

@@ -58,7 +58,8 @@ ARM 命令契约：
 cd /home/gtc/zephyrproject
 west build -p always -b foc_motor \
   -d /home/gtc/Desktop/workspace/STM32_PROJ/foc_motor/build/arm \
-  /home/gtc/Desktop/workspace/STM32_PROJ/foc_motor
+  /home/gtc/Desktop/workspace/STM32_PROJ/foc_motor -- \
+  -DBUILD_VERSION=v4.4.0-12700-g8dafb9a897da
 ```
 
 ## 3. 当前产物
