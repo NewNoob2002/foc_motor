@@ -1,0 +1,11 @@
+CompileFlags:
+  CompilationDatabase: build/arm
+  Remove:
+    - -fno-printf-return-value
+    - -mfp16-format=ieee
+    - -fno-reorder-functions
+---
+If:
+  PathMatch: tests/host/foc/.*
+CompileFlags:
+  CompilationDatabase: build/host

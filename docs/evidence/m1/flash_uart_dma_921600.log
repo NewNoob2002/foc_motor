@@ -1,0 +1,44 @@
+-- west flash: rebuilding
+ninja: no work to do.
+-- west flash: using runner openocd
+Flashing file: /home/gtc/Desktop/workspace/STM32_PROJ/foc_motor/build/arm/zephyr/zephyr.hex
+Open On-Chip Debugger 0.12.0-01050-g91bd278a5 (2026-03-25-02:24)
+Licensed under GNU GPL v2
+For bug reports, read
+	http://openocd.org/doc/doxygen/bugs.html
+3844331732
+none separate
+
+Info : CMSIS-DAP: SWD supported
+Info : CMSIS-DAP: JTAG supported
+Info : CMSIS-DAP: Atomic commands supported
+Info : CMSIS-DAP: UART via USB COM port supported
+Info : CMSIS-DAP: FW Version = 2.1.0
+Info : CMSIS-DAP: Interface Initialised (SWD)
+Info : SWCLK/TCK = 1 SWDIO/TMS = 1 TDI = 1 TDO = 0 nTRST = 0 nRESET = 1
+Info : CMSIS-DAP: Interface ready
+Info : clock speed 1000 kHz
+Info : SWD DPIDR 0x2ba01477
+Info : [stm32g4x.cpu] Cortex-M4 r0p1 processor detected
+Info : [stm32g4x.cpu] target has 6 breakpoints, 4 watchpoints
+Info : starting gdb server for stm32g4x.cpu on 3333
+Info : Listening on port 3333 for gdb connections
+    TargetName         Type       Endian TapName            State       
+--  ------------------ ---------- ------ ------------------ ------------
+ 0* stm32g4x.cpu       cortex_m   little stm32g4x.cpu       running
+
+[stm32g4x.cpu] halted due to debug-request, current mode: Thread 
+xPSR: 0x01000000 pc: 0x080007f0 msp: 0x20000b80
+Info : device idcode = 0x20036468 (STM32G43/G44xx - Rev 'unknown' : 0x2003)
+Info : RDP level 0 (0xAA)
+Info : flash size = 128 KiB
+Info : flash mode : single-bank
+Warn : Adding extra erase range, 0x08009030 .. 0x080097ff
+auto erase enabled
+wrote 36912 bytes from file /home/gtc/Desktop/workspace/STM32_PROJ/foc_motor/build/arm/zephyr/zephyr.hex in 1.133511s (31.801 KiB/s)
+
+[stm32g4x.cpu] halted due to debug-request, current mode: Thread 
+xPSR: 0x01000000 pc: 0x08001ac8 msp: 0x20001780
+verified 36912 bytes in 0.287394s (125.427 KiB/s)
+
+shutdown command invoked

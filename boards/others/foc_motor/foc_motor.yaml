@@ -1,0 +1,12 @@
+identifier: foc_motor
+name: foc_motor STM32G431RB controller
+type: mcu
+arch: arm
+toolchain:
+  - zephyr
+ram: 32
+flash: 128
+supported:
+  - gpio
+  - serial
+vendor: others

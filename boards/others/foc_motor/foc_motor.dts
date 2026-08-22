@@ -1,0 +1,97 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+
+/dts-v1/;
+#include <st/g4/stm32g431Xb.dtsi>
+#include <st/g4/stm32g431r(6-8-b)tx-pinctrl.dtsi>
+#include <zephyr/dt-bindings/dma/stm32_dma.h>
+#include <zephyr/dt-bindings/gpio/gpio.h>
+
+/ {
+	model = "foc_motor STM32G431RB controller";
+	compatible = "foc-motor";
+
+	chosen {
+		zephyr,console = &usart1;
+		zephyr,shell-uart = &usart1;
+		zephyr,sram = &sram0;
+		zephyr,flash = &flash0;
+	};
+};
+
+&clk_hse {
+	clock-frequency = <DT_FREQ_M(16)>;
+	status = "okay";
+};
+
+&pll {
+	div-m = <4>;
+	mul-n = <85>;
+	div-p = <7>;
+	div-q = <2>;
+	div-r = <2>;
+	clocks = <&clk_hse>;
+	status = "okay";
+};
+
+&rcc {
+	clocks = <&pll>;
+	clock-frequency = <DT_FREQ_M(170)>;
+	ahb-prescaler = <1>;
+	apb1-prescaler = <1>;
+	apb2-prescaler = <1>;
+};
+
+&gpioa {
+	status = "okay";
+
+	sd4_hog: motor-shutdown-d {
+		gpio-hog;
+		gpios = <0 GPIO_ACTIVE_HIGH>;
+		output-low;
+		line-name = "SD4";
+	};
+
+	sd2_hog: motor-shutdown-b {
+		gpio-hog;
+		gpios = <1 GPIO_ACTIVE_HIGH>;
+		output-low;
+		line-name = "SD2";
+	};
+
+	sd3_hog: motor-shutdown-c {
+		gpio-hog;
+		gpios = <2 GPIO_ACTIVE_HIGH>;
+		output-low;
+		line-name = "SD3";
+	};
+};
+
+&gpiob {
+	status = "okay";
+
+	sd1_hog: motor-shutdown-a {
+		gpio-hog;
+		gpios = <0 GPIO_ACTIVE_HIGH>;
+		output-low;
+		line-name = "SD1";
+	};
+};
+
+&usart1 {
+	pinctrl-0 = <&usart1_tx_pb6 &usart1_rx_pb7>;
+	pinctrl-names = "default";
+	current-speed = <921600>;
+	interrupts = <37 5>;
+	dmas = <&dmamux1 2 25 (STM32_DMA_PERIPH_TX | STM32_DMA_PRIORITY_LOW)>;
+	dma-names = "tx";
+	status = "okay";
+};
+
+&dma1 {
+	interrupts = <11 5>, <12 5>, <13 5>, <14 5>, <15 5>, <16 5>;
+	status = "okay";
+};
+
+&dmamux1 {
+	status = "okay";
+};

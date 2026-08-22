@@ -1,0 +1,36 @@
+*** Booting Zephyr OS build v4.4.0-12700-g8dafb9a897da ***
+[00:00:00.000,000] [0m<inf> foc_motor: M1 safe boot; SD1-SD4 low; TIM1 disabled; UART DMA TX 921600[0m
+[00:00:00.000,000] [0m<inf> foc_motor: uart_dma_tx_test seq=0[0m
+[00:00:00.000,000] [0m<inf> foc_motor: uart_dma_tx_test seq=1[0m
+[00:00:00.000,000] [0m<inf> foc_motor: uart_dma_tx_test seq=2[0m
+[00:00:00.000,000] [0m<inf> foc_motor: uart_dma_tx_test seq=3[0m
+[00:00:00.000,000] [0m<inf> foc_motor: uart_dma_tx_test seq=4[0m
+[00:00:00.000,000] [0m<inf> foc_motor: uart_dma_tx_test seq=5[0m
+[00:00:00.000,000] [0m<inf> foc_motor: uart_dma_tx_test seq=6[0m
+[00:00:00.000,000] [0m<inf> foc_motor: uart_dma_tx_test seq=7[0m
+[00:00:00.000,000] [0m<inf> foc_motor: uart_dma_tx_test seq=8[0m
+[00:00:00.000,000] [0m<inf> foc_motor: uart_dma_tx_test seq=9[0m
+[00:00:00.000,000] [0m<inf> foc_motor: uart_dma_tx_test seq=10[0m
+[00:00:00.000,000] [0m<inf> foc_motor: uart_dma_tx_test seq=11[0m
+[00:00:00.000,000] [0m<inf> foc_motor: uart_dma_tx_test seq=12[0m
+[00:00:00.000,000] [0m<inf> foc_motor: uart_dma_tx_test seq=13[0m
+[00:00:00.000,000] [0m<inf> foc_motor: uart_dma_tx_test seq=14[0m
+[00:00:00.000,000] [0m<inf> foc_motor: uart_dma_tx_test seq=15[0m
+*** Booting Zephyr OS build v4.4.0-12700-g8dafb9a897da ***
+[00:00:00.000,000] [0m<inf> foc_motor: M1 safe boot; SD1-SD4 low; TIM1 disabled; UART DMA TX 921600[0m
+[00:00:00.000,000] [0m<inf> foc_motor: uart_dma_tx_test seq=0[0m
+[00:00:00.000,000] [0m<inf> foc_motor: uart_dma_tx_test seq=1[0m
+[00:00:00.000,000] [0m<inf> foc_motor: uart_dma_tx_test seq=2[0m
+[00:00:00.000,000] [0m<inf> foc_motor: uart_dma_tx_test seq=3[0m
+[00:00:00.000,000] [0m<inf> foc_motor: uart_dma_tx_test seq=4[0m
+[00:00:00.000,000] [0m<inf> foc_motor: uart_dma_tx_test seq=5[0m
+[00:00:00.000,000] [0m<inf> foc_motor: uart_dma_tx_test seq=6[0m
+[00:00:00.000,000] [0m<inf> foc_motor: uart_dma_tx_test seq=7[0m
+[00:00:00.000,000] [0m<inf> foc_motor: uart_dma_tx_test seq=8[0m
+[00:00:00.000,000] [0m<inf> foc_motor: uart_dma_tx_test seq=9[0m
+[00:00:00.000,000] [0m<inf> foc_motor: uart_dma_tx_test seq=10[0m
+[00:00:00.000,000] [0m<inf> foc_motor: uart_dma_tx_test seq=11[0m
+[00:00:00.000,000] [0m<inf> foc_motor: uart_dma_tx_test seq=12[0m
+[00:00:00.000,000] [0m<inf> foc_motor: uart_dma_tx_test seq=13[0m
+[00:00:00.000,000] [0m<inf> foc_motor: uart_dma_tx_test seq=14[0m
+[00:00:00.000,000] [0m<inf> foc_motor: uart_dma_tx_test seq=15[0m

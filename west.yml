@@ -1,0 +1,12 @@
+manifest:
+  projects:
+    - name: zephyr
+      url: https://github.com/zephyrproject-rtos/zephyr
+      revision: 8dafb9a897da0f79a1a3724a108b21fc28719915
+      import:
+        name-allowlist:
+          - cmsis
+          - cmsis_6
+          - hal_stm32
+  self:
+    path: foc_motor

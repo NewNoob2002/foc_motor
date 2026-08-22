@@ -1,0 +1,6 @@
+board:
+  name: foc_motor
+  full_name: foc_motor STM32G431RB controller
+  vendor: others
+  socs:
+    - name: stm32g431xx

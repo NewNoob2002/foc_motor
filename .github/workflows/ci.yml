@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  host:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S tests/host/foc -B build/host -DCMAKE_BUILD_TYPE=Debug
+      - name: Build and test
+        run: |
+          cmake --build build/host
+          ctest --test-dir build/host --output-on-failure
+
+  arm:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: foc_motor
+      - name: Set up Zephyr
+        uses: zephyrproject-rtos/action-zephyr-setup@360ff9b36e58499d9eb28015cdcde7ca03a5b04d
+        with:
+          app-path: foc_motor
+          toolchains: arm-zephyr-eabi
+          sdk-version: 1.0.1
+      - name: Check Zephyr baseline
+        run: test "$(git -C "$(west list zephyr -f '{abspath}')" rev-parse HEAD)" = 8dafb9a897da0f79a1a3724a108b21fc28719915
+      - name: Build firmware
+        working-directory: foc_motor
+        run: west build -p always -b foc_motor -d build/arm .
+      - name: Check artifacts and budgets
+        working-directory: foc_motor
+        shell: bash
+        run: |
+          test -s build/arm/zephyr/zephyr.elf
+          test -s build/arm/zephyr/zephyr.hex
+          test -s build/arm/zephyr/zephyr.bin
+          test -s build/arm/zephyr/zephyr.map
+          read -r text data bss _ < <(arm-zephyr-eabi-size build/arm/zephyr/zephyr.elf | tail -n 1)
+          test "$((text + data))" -le 98304
+          test "$((data + bss))" -le 24576
+          ! arm-zephyr-eabi-nm build/arm/zephyr/zephyr.elf | grep -Eq '[[:space:]](malloc|calloc|realloc|free|k_malloc|k_calloc|k_heap_alloc)$'
+          test "$(grep -c 'output-low;' build/arm/zephyr/zephyr.dts)" -eq 4
+          grep -qx 'CONFIG_HEAP_MEM_POOL_SIZE=0' build/arm/zephyr/.config
+          grep -qx 'CONFIG_MAIN_STACK_SIZE=512' build/arm/zephyr/.config
+          grep -qx 'CONFIG_IDLE_STACK_SIZE=320' build/arm/zephyr/.config
+          grep -qx 'CONFIG_ISR_STACK_SIZE=1024' build/arm/zephyr/.config
+          grep -qx 'CONFIG_SYSTEM_WORKQUEUE_STACK_SIZE=512' build/arm/zephyr/.config
+          grep -qx 'CONFIG_LOG_PROCESS_THREAD_STACK_SIZE=768' build/arm/zephyr/.config
+          grep -qx 'CONFIG_HW_STACK_PROTECTION=y' build/arm/zephyr/.config
+      - uses: actions/upload-artifact@v4
+        with:
+          name: foc_motor-arm
+          path: |
+            foc_motor/build/arm/zephyr/zephyr.elf
+            foc_motor/build/arm/zephyr/zephyr.hex
+            foc_motor/build/arm/zephyr/zephyr.bin
+            foc_motor/build/arm/zephyr/zephyr.map
+            foc_motor/build/arm/zephyr/.config
+            foc_motor/build/arm/zephyr/zephyr.dts
