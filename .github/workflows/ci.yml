@@ -8,7 +8,7 @@ jobs:
   host:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Configure
         run: cmake -S tests/host/foc -B build/host -DCMAKE_BUILD_TYPE=Debug
       - name: Build and test
@@ -19,7 +19,7 @@ jobs:
   arm:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: foc_motor
       - name: Set up Zephyr
@@ -41,10 +41,14 @@ jobs:
           test -s build/arm/zephyr/zephyr.hex
           test -s build/arm/zephyr/zephyr.bin
           test -s build/arm/zephyr/zephyr.map
-          read -r text data bss _ < <(arm-zephyr-eabi-size build/arm/zephyr/zephyr.elf | tail -n 1)
+          nm_tool="$(sed -n 's/^CMAKE_NM:FILEPATH=//p' build/arm/CMakeCache.txt)"
+          size_tool="$(dirname "$nm_tool")/arm-zephyr-eabi-size"
+          test -x "$nm_tool"
+          test -x "$size_tool"
+          read -r text data bss _ < <("$size_tool" build/arm/zephyr/zephyr.elf | tail -n 1)
           test "$((text + data))" -le 98304
           test "$((data + bss))" -le 24576
-          ! arm-zephyr-eabi-nm build/arm/zephyr/zephyr.elf | grep -Eq '[[:space:]](malloc|calloc|realloc|free|k_malloc|k_calloc|k_heap_alloc)$'
+          ! "$nm_tool" build/arm/zephyr/zephyr.elf | grep -Eq '[[:space:]](malloc|calloc|realloc|free|k_malloc|k_calloc|k_heap_alloc)$'
           test "$(grep -c 'output-low;' build/arm/zephyr/zephyr.dts)" -eq 4
           grep -qx 'CONFIG_HEAP_MEM_POOL_SIZE=0' build/arm/zephyr/.config
           grep -qx 'CONFIG_MAIN_STACK_SIZE=512' build/arm/zephyr/.config
@@ -53,7 +57,7 @@ jobs:
           grep -qx 'CONFIG_SYSTEM_WORKQUEUE_STACK_SIZE=512' build/arm/zephyr/.config
           grep -qx 'CONFIG_LOG_PROCESS_THREAD_STACK_SIZE=768' build/arm/zephyr/.config
           grep -qx 'CONFIG_HW_STACK_PROTECTION=y' build/arm/zephyr/.config
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: foc_motor-arm
           path: |
