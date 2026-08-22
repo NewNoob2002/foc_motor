@@ -1,6 +1,6 @@
 # Development Roadmap
 
-状态：M0 已确认；M1 进行中。软件骨架、本地构建、目标识别、烧录校验、寄存器安全态和板载控制台已通过；真实引脚波形仍阻塞 M1 关闭，证据见 [m1_build_evidence.md](./m1_build_evidence.md)。
+状态：M0 已确认；M1 进行中。本地与远程 CI、目标识别、烧录校验、寄存器安全态和板载控制台已通过；仅真实引脚波形仍阻塞 M1 关闭，证据见 [m1_build_evidence.md](./m1_build_evidence.md)。
 
 ## M0 — 工程设计（已完成）
 

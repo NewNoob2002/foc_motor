@@ -1,6 +1,6 @@
 # M1 Build Evidence
 
-状态：本地构建、目标识别、烧录校验、无功率寄存器检查和板载控制台通过；远程 CI 与真实引脚电平验证待完成。记录日期：2026-08-22。
+状态：本地/远程 CI、目标识别、烧录校验、无功率寄存器检查和板载控制台通过；仅真实引脚电平验证仍阻塞 M1 关闭。记录日期：2026-08-22。
 
 ## 1. 固定基线
 
@@ -30,6 +30,8 @@
 | 动态内存入口 | PASS | ELF 不含 `malloc/calloc/realloc/free/k_malloc/k_calloc/k_heap_alloc`；`CONFIG_HEAP_MEM_POOL_SIZE=0` |
 | 安全 devicetree | PASS | generated DTS 有且只有 4 个 `output-low` GPIO hog；TIM1/PWM disabled |
 | UART DMA devicetree | PASS | USART1=921600；DMA selector 2（DMA1 Channel 3）；DMAMUX request 25；USART1/DMA IRQ priority 5 |
+| GitHub Host CI | PASS | commit `7080602461b0a0d2339a4bf07e0e92a741a1055b`，CTest `1/1` |
+| GitHub ARM CI | PASS | Zephyr 精确基线、pristine build、全部门禁及六项 artifact 上传通过 |
 
 静态线程栈预算：
 
@@ -73,7 +75,35 @@ west build -p always -b foc_motor \
 
 构建目录被 `.gitignore` 排除；CI 上传相同六类产物用于审计。
 
-## 4. 目标板证据
+## 4. 远程 CI 证据
+
+最终认证对象为 commit `7080602461b0a0d2339a4bf07e0e92a741a1055b`：
+
+- Workflow：<https://github.com/NewNoob2002/foc_motor/actions/runs/32583149447>
+- Host job：<https://github.com/NewNoob2002/foc_motor/actions/runs/32583149447/job/97055408513>
+- ARM job：<https://github.com/NewNoob2002/foc_motor/actions/runs/32583149447/job/97055408634>
+
+| 远端 artifact | SHA-256 |
+|---|---|
+| `zephyr.elf` | `91df94dc8573fbd1b28aa232559b1035cc6ffd1f9d70ab5bc7f91b7832ba2a16` |
+| `zephyr.hex` | `bcb70b638dfb33e0c7b054fca26258b5fc0c9131804120c614819c1d004b9837` |
+| `zephyr.bin` | `c13f32d185895d6546937f28f3e7fd1c86358fa2f443cde1a38d47a2fc7b7b75` |
+| `zephyr.map` | `484ec9329bcc0b9d11fc46b2485da1c58a6f3aa426e36e1bc945918c4c5861b9` |
+| `.config` | `6a3c84f59989c49eb961ebf8ac3f9b356196061fbc4a781eb462c5689884c961` |
+| `zephyr.dts` | `6ce5480651cd7767035c07415711ec2c57f4b10129002ac9b0225af6620831b2` |
+
+CI 显式固定 `BUILD_VERSION=v4.4.0-12700-g8dafb9a897da` 后，远端 HEX/BIN 与本地产物逐字节一致。ELF/map 包含构建机绝对路径，generated DTS 注释也包含路径；本机完整 west workspace 还暴露了 CI 最小 manifest 之外的未启用模块，因此这些审计文件的哈希不要求跨主机相同，以远端 artifact 为认证副本。
+
+重试记录没有被覆盖：
+
+| Run | 结果 | 分类与处理 |
+|---|---|---|
+| `32582193515` | FAIL | ARM 已编译；门禁假设 `arm-zephyr-eabi-size` 在 `PATH`，远端找不到。改为从 CMake 的 `CMAKE_NM` 定位 SDK 工具目录。 |
+| `32582638335` | PASS | Host/ARM 和门禁通过；发现 artifact 默认排除隐藏 `.config`。 |
+| `32582920834` | PASS | 六项 artifact 完整；发现 shallow checkout 导致 build string 与本机不同。 |
+| `32583149447` | PASS / FINAL | 固定 build string；Host/ARM、门禁、artifact 完整，HEX/BIN 与本机一致。 |
+
+## 5. 目标板证据
 
 | 项目 | 结果 | 证据 |
 |---|---|---|
@@ -94,7 +124,7 @@ west build -p always -b foc_motor \
 
 原始日志位于 `build/hil/`。一次额外的独立 `verify_image` 诊断触发了 OpenOCD 目标端 CRC 算法 double fault；该次结果不计入通过证据。随后通过 SYSRESETREQ 恢复，PC 再次确认在正常 idle 路径。烧录命令自身的写入和 verify 无错误。
 
-## 5. 安全边界与剩余项
+## 6. 安全边界与剩余项
 
 - `src/main.c` 编译期核对 `SD1=PB0`、`SD2=PA1`、`SD3=PA2`、`SD4=PA0`，并要求四者均为 `output-low` GPIO hog。
 - M1 不启用 TIM1、PWM、ADC、ADC DMA、TIM3、SPI 或 CAN；仅启用 USART1 TX 诊断 DMA，不包含 Clarke、Park、PI、SVPWM 或任何 FOC 实现。

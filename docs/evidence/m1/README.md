@@ -2,6 +2,8 @@
 
 记录日期：2026-08-22。以下文件是 `build/hil/` 原始日志的受控副本；固件产物本身由 CI artifact 保存。
 
+最终远程 CI 为 [run 32583149447](https://github.com/NewNoob2002/foc_motor/actions/runs/32583149447)，认证 commit `7080602461b0a0d2339a4bf07e0e92a741a1055b`；六项 artifact 哈希见 [`m1_build_evidence.md`](../../m1_build_evidence.md)。
+
 | 文件 | 内容 | SHA-256 |
 |---|---|---|
 | `flash_uart_dma_921600.log` | CMSIS-DAP 目标身份、写入和 verify | `c3fe2d6b10cd918ece217a470c10f52cc8c6cf8a76306a7c85c7fa0e499ec556` |
