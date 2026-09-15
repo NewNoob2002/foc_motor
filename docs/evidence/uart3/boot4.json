@@ -1,0 +1,25 @@
+{
+  "runtime_monitor": {
+    "schema_version": 1,
+    "created_at_utc": "2026-09-05T14:15:34.414087+00:00",
+    "finished_at_utc": "2026-09-05T14:16:09.443694+00:00",
+    "transport": "uart",
+    "settings": {
+      "port": "/dev/ttyUSB0",
+      "baud": 921600,
+      "format": "8N1",
+      "flow_control": "none",
+      "duration_seconds": 35
+    },
+    "capture": "/home/gtc/Desktop/workspace/STM32_PROJ/foc_motor/build/hil/uart3/boot4.raw",
+    "bytes": 1262,
+    "sequence": [],
+    "invalid_bytes": 0,
+    "required_events": [
+      "Zephyr banner",
+      "USART3 safe boot",
+      "seq=0..15 exactly once"
+    ],
+    "passed": false
+  }
+}

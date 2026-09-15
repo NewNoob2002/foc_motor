@@ -35,9 +35,10 @@
 
 ### 3.2 Console USART
 
-- `HW-UART-001` — `CONFIRMED`：主板 `USART1_TX`/`USART1_RX` 分别连接 STM32G431 的 PB6/PB7，并经 U26 CH340N 接到板载 USB；Zephyr console 使用 USART1、921600 8N1。证据：`DOC-MAIN-SCH` U3/U26 与 USART1 网络；`DOC-MCU-DS` GPIO alternate-function table。
-- `HW-UART-002` — `CONFIRMED`：USART1 日志 TX 使用 Zephyr deferred logging + asynchronous UART backend。devicetree 的 DMA selector `2` 在当前 STM32 DMA v2 驱动中映射到 DMA1 Channel 3，DMAMUX request `25` 对应 USART1_TX；USART1 和 DMA1 IRQ 均为普通优先级 5。该路径只服务诊断线程，FOC ISR 禁止调用日志或 UART API。
-- 板载 U26 CH340 通过 Type-C 枚举为 `/dev/ttyUSB0`（`1a86:7523`，稳定路径 `/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0`）。921600 8N1 下连续两次启动均完整收到 Zephyr banner、安全状态和 `seq=0..15`，共 2520 B，无乱码或丢失；运行态 BRR=`0x00b8`、DMAMUX C2CR=`0x19`。外接 `/dev/ttyACM1` 接排针时捕获为 0 B，属于外接线束问题，不影响板载控制台结论。
+- `HW-UART-001` — `CONFIRMED`：主板 `USART1_TX`/`USART1_RX` 分别连接 STM32G431 的 PB6/PB7，并经 U26 CH340N 接到板载 Type-C。2026-09-05 起固件禁用 USART1，不再使用该日志路径。证据：`DOC-MAIN-SCH` U3/U26 与 USART1 网络；`DOC-MCU-DS` GPIO alternate-function table。
+- `HW-UART-002` — `CONFIRMED`：当前 USART3 日志 TX 使用 Zephyr deferred logging + asynchronous UART backend。devicetree 的 DMA selector `2` 在当前 STM32 DMA v2 驱动中映射到 DMA1 Channel 3，DMAMUX request `29` 对应 USART3_TX；USART3 IRQ 39 和 DMA1 IRQ 均为普通优先级 5。request 29 与本机固定 STM32 HAL 的 `DMA_REQUEST_USART3_TX` / `LL_DMAMUX_REQ_USART3_TX` 一致。该路径只服务诊断线程，FOC ISR 禁止调用日志或 UART API。
+- `HW-UART-003` — `CONFIRMED`：排针 H2 的 6 脚为 USART3_TX/PB10（U3 第 30 脚），5 脚为 USART3_RX/PB11（U3 第 33 脚），1 脚为 DGND；PB10/PB11 使用 AF7。Zephyr console 和 shell-uart 均选 USART3，921600 8N1。外接 3.3 V TTL 转接器 RX 接 H2/6、TX 接 H2/5、GND 接 H2/1；用户确认本次连接到 `/dev/ttyUSB0`。证据：`DOC-MAIN-SCH` U3/H2；固定 HAL pinctrl 文件 `stm32g431r(6-8-b)tx-pinctrl.dtsi`。
+- 2026-08-22 的板载 CH340 历史验证曾通过 `/dev/ttyUSB0` 完整收到两次启动共 2520 B；该记录见 `docs/m1_build_evidence.md` 第 5 节，不代表当前排针接线。Linux 串口编号及无独立序列号的 CH340 by-id 名称不能单独区分板载和外接转换器，必须结合接线与本次固件验证。
 - 当前 DMA 分配是 M1 诊断基线。M2 接入 ADC2 DMA 时优先选择不冲突的 DMA selector；若硬件/驱动约束形成冲突，再调整 UART TX DMA，不改变 FOC ISR 禁止日志的边界。
 
 ### 3.3 PWM 与四桥臂
@@ -136,3 +137,23 @@ CPU 可以同时通过 TIM1 break 接收和记录故障，但不能是首次关�
 | ARM compiler | GCC 14.3.0 | `arm-zephyr-eabi-gcc (Zephyr SDK 1.0.1)` |
 
 Context7 可用的最近版本化官方文档 ID 为 `/zephyrproject-rtos/zephyr/v4.4.0`。zero-latency IRQ 采用 direct ISR/`IRQ_ZERO_LATENCY`，位于 Cortex-M 的最高中断优先级且不得调用内核 API；M1 构建仍以本机精确提交和本地源码为准。
+
+## 10. 电机输入规格（2026-09-05）
+
+来源：用户提供的 4006 无刷电机参数，尚未取得品牌、完整料号、厂家规格书或实测记录。下表是需求输入，不使用 `CONFIRMED` 表示厂家资料已交叉验证，也不据此使能功率输出。
+
+| 参数 | 用户提供 / 推导值 | 状态与限制 |
+|---|---|---|
+| 电机规格 | 4006 无刷电机 | 品牌、完整料号和绕组接法待确认 |
+| 定子尺寸 | 外径 40 mm，厚度 6 mm | 用户提供；不等同于电机外壳尺寸 |
+| 定子槽数 / 转子极数 | 12 槽 / 14 极 | 用户提供 |
+| 极对数 | 7 | 由 14 极 / 2 推导；替代此前极对数未知项 |
+| KV | 380 rpm/V | 按用户 KV 380 记录；不能独自确定工作母线或机械安全转速 |
+| 空载电流 | 0.3 A | 测试电压、转速、测量位置和温度未提供 |
+| 电机电阻 | 原始输入 170 Ω | 单位待核对，需确认是否实际为 170 mΩ（0.17 Ω）；同时确认线间/相电阻、测量温度及方法。未经确认不更改原值，也不用于控制参数 |
+| 最大电流 | 原始描述“最大连续电流 18 A / 60 s” | 保留 60 s 限时条件；未证明长期连续能力，待确认母线/相电流、RMS/峰值、散热和冷却间隔 |
+| 最大功率 | 原始描述“最大连续功率 450 W” | 待确认电输入/机械输出、适用电压、持续时间及散热；不能据此反推额定母线 |
+
+电流和功率上限最终需同时满足电机、功率板、采样链、电源及散热约束。电机 18 A 标称值不等于 FOC 的相电流或 `Iq` 限值，不直接写入固件。
+
+M0 尚需确认的系统输入与后续测量分工见 [开发路线图](./development_roadmap.md) 的“M0 参数确认清单”。

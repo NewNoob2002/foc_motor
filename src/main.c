@@ -20,18 +20,23 @@ ASSERT_SHUTDOWN_LOW(DT_NODELABEL(sd3_hog), DT_NODELABEL(gpioa), 2, "SD3");
 ASSERT_SHUTDOWN_LOW(DT_NODELABEL(sd4_hog), DT_NODELABEL(gpioa), 0, "SD4");
 BUILD_ASSERT(!DT_NODE_HAS_STATUS(DT_NODELABEL(timers1), okay),
 	     "TIM1 must remain disabled during M1");
-BUILD_ASSERT(DT_PROP(DT_NODELABEL(usart1), current_speed) == 921600,
-	     "USART1 must run at 921600 baud");
-BUILD_ASSERT(DT_DMAS_HAS_NAME(DT_NODELABEL(usart1), tx),
-	     "USART1 must have a TX DMA channel");
-BUILD_ASSERT(DT_DMAS_CELL_BY_NAME(DT_NODELABEL(usart1), tx, channel) == 2,
-	     "USART1 TX must use DMA selector 2 (DMA1 channel 3) during M1");
-BUILD_ASSERT(DT_DMAS_CELL_BY_NAME(DT_NODELABEL(usart1), tx, slot) == 25,
-	     "USART1 TX must use DMAMUX request 25");
+BUILD_ASSERT(DT_SAME_NODE(DT_CHOSEN(zephyr_console), DT_NODELABEL(usart3)) &&
+	     DT_SAME_NODE(DT_CHOSEN(zephyr_shell_uart), DT_NODELABEL(usart3)),
+	     "Console and shell UART must use the USART3 header");
+BUILD_ASSERT(!DT_NODE_HAS_STATUS(DT_NODELABEL(usart1), okay),
+	     "CH340 USART1 must remain disabled");
+BUILD_ASSERT(DT_PROP(DT_NODELABEL(usart3), current_speed) == 921600,
+	     "USART3 must run at 921600 baud");
+BUILD_ASSERT(DT_DMAS_HAS_NAME(DT_NODELABEL(usart3), tx),
+	     "USART3 must have a TX DMA channel");
+BUILD_ASSERT(DT_DMAS_CELL_BY_NAME(DT_NODELABEL(usart3), tx, channel) == 2,
+	     "USART3 TX must use DMA selector 2 (DMA1 channel 3) during M1");
+BUILD_ASSERT(DT_DMAS_CELL_BY_NAME(DT_NODELABEL(usart3), tx, slot) == 29,
+	     "USART3 TX must use DMAMUX request 29");
 
 int main(void)
 {
-	LOG_INF("M1 safe boot; SD1-SD4 low; TIM1 disabled; UART DMA TX 921600");
+	LOG_INF("M1 safe boot; SD1-SD4 low; TIM1 disabled; USART3 DMA TX 921600");
 
 	for (uint32_t sequence = 0; sequence < 16U; sequence++) {
 		LOG_INF("uart_dma_tx_test seq=%u", sequence);

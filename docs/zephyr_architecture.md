@@ -123,7 +123,7 @@ STM32/Zephyr 的数值优先级越小越高。下表是目标配置；实际 IRQ
 | 2 | DMA error / encoder Z | direct/regular | DMA 错误置故障；Z 捕获计数和方向一致性 | 日志、协议处理 |
 | 3 | FDCAN RX/TX/error（未来） | Zephyr driver ISR | 恢复 CAN 范围后由驱动收发固定 CAN 缓冲 | 调用 FOC Kernel |
 | 4 | system timer | Zephyr kernel | 调度与超时 | 电机控制计算 |
-| 5 及更低 | USART1 / DMA1 Channel 3 / USB / LCD | Zephyr driver ISR | 非实时 I/O；USART1 TX DMA 仅搬运诊断日志 | 影响控制时序 |
+| 5 及更低 | USART3 / DMA1 Channel 3 / USB / LCD | Zephyr driver ISR | 非实时 I/O；USART3 TX DMA 仅搬运诊断日志 | 影响控制时序 |
 
 FOC ISR 是唯一计划使用的零延迟 ISR。硬件保护必须在它之外先完成关断，因此即使 CPU 卡死或 FOC ISR 占用，功率级仍能进入安全态。FOC ISR 返回前必须检查本周期运行时间；超期计数为粘滞诊断，连续超期触发停机。
 
@@ -142,7 +142,7 @@ FOC ISR 是唯一计划使用的零延迟 ISR。硬件保护必须在它之外�
 
 线程之间使用固定大小消息和快照。Control -> FOC ISR、FOC ISR -> telemetry 都采用单写者 sequence snapshot；平台适配层提供 32-bit 原子访问和内存屏障。FOC ISR 不获取 mutex/semaphore，也不向 Zephyr queue 写入。
 
-M1 控制台固定为 USART1 921600 8N1，使用 deferred logging 与 asynchronous UART TX。日志处理线程优先级为 6，日志环形缓冲 1024 B、UART backend 缓冲 128 B，全部静态分配；缓冲满时允许丢弃旧诊断数据，不得阻塞实时控制。devicetree 当前保留 DMA selector `2`（DMA1 Channel 3）和 DMAMUX request `25`（USART1_TX），USART1/DMA IRQ 优先级为 5。M2 接入 ADC2 DMA 时先选择其他通道；若资源冲突，再调整诊断 UART DMA。无论是否使用 DMA，FOC ISR 都不得产生日志。
+M1 控制台固定为排针 H2 USART3（PB10 TX/PB11 RX）921600 8N1，板载 Type-C/CH340 USART1 禁用，使用 deferred logging 与 asynchronous UART TX。日志处理线程优先级为 6，日志环形缓冲 1024 B、UART backend 缓冲 128 B，全部静态分配；缓冲满时允许丢弃旧诊断数据，不得阻塞实时控制。devicetree 当前保留 DMA selector `2`（DMA1 Channel 3）和 DMAMUX request `29`（USART3_TX），USART3/DMA IRQ 优先级为 5。M2 接入 ADC2 DMA 时先选择其他通道；若资源冲突，再调整诊断 UART DMA。无论是否使用 DMA，FOC ISR 都不得产生日志。
 
 ## 5. 实时性与可测量性
 
@@ -216,7 +216,8 @@ M1 控制台固定为 USART1 921600 8N1，使用 deferred logging 与 asynchrono
 
 ## 9. 尚待确认的系统决策
 
-- 电机额定/峰值电流、母线电压、极对数、最高机械转速和允许的 PWM 频率范围。
+- 电机规格已由用户提供：4006、12 槽 14 极（7 极对）、KV380；详见 [电机输入规格](./hardware_reference.md#10-电机输入规格2026-09-05)。170 Ω 电阻单位、18 A/60 s 的电流定义与热条件、450 W 功率定义尚待核对。
+- 尚需确认工作母线及电源、长期/峰值电流、目标与最高机械转速、负载/运行时长、允许的 PWM 范围；逐项关闭要求见 [M0 参数清单](./development_roadmap.md#m0-参数确认清单)。
 - CAN/CANopen 当前延期；恢复范围时再确认 CiA 402、隔离、连接器和终端策略。
 - 编码器运行时只用 ABZ 是否可接受；如必须持续绝对角，需硬件改版。
 - 硬件过流阈值、关断时间和复位策略。

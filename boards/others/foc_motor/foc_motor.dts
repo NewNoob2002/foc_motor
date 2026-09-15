@@ -11,8 +11,8 @@
 	compatible = "foc-motor";
 
 	chosen {
-		zephyr,console = &usart1;
-		zephyr,shell-uart = &usart1;
+		zephyr,console = &usart3;
+		zephyr,shell-uart = &usart3;
 		zephyr,sram = &sram0;
 		zephyr,flash = &flash0;
 	};
@@ -77,12 +77,13 @@
 	};
 };
 
-&usart1 {
-	pinctrl-0 = <&usart1_tx_pb6 &usart1_rx_pb7>;
+/* HW-UART-003: H2 pin 6 TX/PB10, pin 5 RX/PB11, pin 1 GND. */
+&usart3 {
+	pinctrl-0 = <&usart3_tx_pb10 &usart3_rx_pb11>;
 	pinctrl-names = "default";
 	current-speed = <921600>;
-	interrupts = <37 5>;
-	dmas = <&dmamux1 2 25 (STM32_DMA_PERIPH_TX | STM32_DMA_PRIORITY_LOW)>;
+	interrupts = <39 5>;
+	dmas = <&dmamux1 2 29 (STM32_DMA_PERIPH_TX | STM32_DMA_PRIORITY_LOW)>;
 	dma-names = "tx";
 	status = "okay";
 };

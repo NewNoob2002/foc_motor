@@ -1,0 +1,28 @@
+{
+  "created_at_utc": "2026-09-05T14:38:51.811742+00:00",
+  "type": "offline_reanalysis_not_new_hardware_run",
+  "capture": "boot4.raw",
+  "sha256": "bc3ea11bcd7ea359021ca53e98794ec48b7c8da05c1c930084a8c53d7fdf0016",
+  "bytes": 1262,
+  "sequence": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15
+  ],
+  "passed": true,
+  "checker_regression_cases_passed": 5,
+  "original_result": "boot4.json preserved; false failure from regex (d+)"
+}
