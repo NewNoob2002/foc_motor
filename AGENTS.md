@@ -3,9 +3,10 @@
 ## 当前阶段
 
 - 2026-10-14 用户采用初学者路线图 `docs/plan/beginner_roadmap.md` 作为当前执行路径：Stage 0–7，每个 Stage 学一项技能并以可展示的结果结束。`docs/plan/development_roadmap.md` 保留为长期产品阶段门（M0–M6），Stage 与 M 节点的对应见初学者路线图第 5 节。
-- 当前处于 **Stage 1**（台架准备与启动安全检查：J-Link 寄存器/观察点检查和万用表复位静态检查）；Stage 0（工具链、safe-boot 固件、CI、host FOC 学习）已完成。进入下一个 Stage 前需用户明确确认，并在本节记录日期。
+- 当前处于 **Stage 2**（手动转动读取编码器），2026-10-14 用户确认进入。进入下一个 Stage 前需用户明确确认，并在本节记录日期。
+- 已完成：Stage 0（工具链、safe-boot 固件、CI、host FOC 学习）；Stage 1（J-Link 启动安全检查和万用表复位检查，2026-10-14，记录见 `docs/evidence/lab_notes/stage1_boot_check.md`；R-18 波形仍留到 Stage 7 前）。
 - 各 Stage 的允许范围：
-  - Stage 1–4：仅 USB 供电，不接 DCBUS，SD1–SD4 保持低。Stage 1 只用 J-Link 对板上现有固件做暂停、单步、观察点、读寄存器和复位，不烧录。允许在 BSP 中实现 TIM3 编码器、ADC2 读数、TIM1 PWM 与 ADC 触发，只在 MCU 引脚上观测。
+  - Stage 1–4：仅逻辑供电（USB 或调试器 3.3 V），不接 DCBUS，SD1–SD4 保持低。Stage 1 只用 J-Link 对板上现有固件做暂停、单步、观察点、读寄存器和复位，不烧录。允许在 BSP 中实现 TIM3 编码器、ADC2 读数、TIM1 PWM 与 ADC 触发，只在 MCU 引脚上观测。
   - Stage 5：允许把 `lib/foc` 编入测试固件（不接 ISR、不使能 PWM），做数值对比和 DWT 计时。
   - Stage 6：允许 FOC ISR 在不接 DCBUS、SD1–SD4 保持低的条件下运行。
   - Stage 7（首次带电）：尚未获准。进入前须满足“安全默认值”，用逻辑分析仪或示波器记录 R-18 的真实引脚波形，并由用户对 R-02 作出决定（先增加独立于 CPU 的硬件关断，或仅针对低压限流学习台架正式接受风险），记录在本文件和 `docs/plan/risk_list.md`。

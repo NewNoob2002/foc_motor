@@ -1,6 +1,6 @@
 # Beginner Roadmap
 
-Status: **adopted 2026-10-14** as the current execution path (`AGENTS.md`, "当前阶段"). **Current stage: 1.** [development_roadmap.md](./development_roadmap.md) stays as the long-term product plan; section 5 maps the two.
+Status: **adopted 2026-10-14** as the current execution path (`AGENTS.md`, "当前阶段"). **Current stage: 2** (confirmed 2026-10-14; stage 1 done, see [its lab note](../evidence/lab_notes/stage1_boot_check.md)). [development_roadmap.md](./development_roadmap.md) stays as the long-term product plan; section 5 maps the two.
 
 The M0–M6 plan is organized around formal stage gates. This plan is organized around **one new skill per stage, each with a result you can see**. Motor power comes only at the last stage. Theory and measured simulation results are in [foc_knowledge_base.md](../study/foc_knowledge_base.md).
 
@@ -38,10 +38,10 @@ Each stage: **learn** (the concept), **do** (the code or setup), **done when** (
 - Zephyr v4.4.2 build, safe-boot firmware, UART3 console, CI (host + ARM) — done, CI run 38546477578.
 - Clarke/Park, PI, SVPWM, current and speed loops in simulation — done (study guide exercises 1–3).
 
-### Stage 1 — Bench setup and the boot-safety check with the J-Link
+### Stage 1 — Bench setup and the boot-safety check with the J-Link (done 2026-10-14)
 
 - **Learn:** the debugger (halt, step, data watchpoints), GPIO and TIM1 registers, what "safe at reset" means, and why a register snapshot is not a waveform.
-- **Do:** USB power only, no DCBUS, no flashing: debug the firmware already on the board.
+- **Do:** logic power only (USB or the debugger's 3.3 V), no DCBUS, no flashing: debug the firmware already on the board.
   1. Bench record: power source and current limit, how you cut power, J-Link serial number, board UID read back over SWD (M1 recorded `001D0050 42535013 20363130`).
   2. Multimeter: hold the reset button and measure SD1–SD4 to ground. While reset is held the MCU pins are high-impedance, so this checks the EG2104 internal pull-downs.
   3. Halt at the first instruction after reset. Read `MODER`, `ODR` and `IDR` for SD1 (PB0), SD2 (PA1), SD3 (PA2), SD4 (PA0) and PC0–PC3, plus TIM1 `CR1` and `BDTR`.
@@ -61,13 +61,13 @@ Register addresses (RM0440, check against the reference manual): GPIOA `0x4800_0
 ### Stage 3 — Read the ADC
 
 - **Learn:** ADC calibration, converting counts to volts and amps, noise.
-- **Do:** USB power only. Read IA, IC, VBUS and TEMP; average 1000 samples of IA/IC with no current.
+- **Do:** logic power only (USB or the debugger's 3.3 V). Read IA, IC, VBUS and TEMP; average 1000 samples of IA/IC with no current.
 - **Done when:** IA/IC offsets recorded (expect near 2048 counts) with their noise in counts; VBUS reads near 0; the conversion formulas are in code and in the lab note.
 
 ### Stage 4 — PWM on the MCU pins
 
 - **Learn:** center-aligned PWM, shadow registers and the update event, triggering the ADC from TIM1.
-- **Do:** USB power only, SD1–SD4 low. TIM1 CH1–3 at 20 kHz with fixed duties (for example 0.25 / 0.50 / 0.75); trigger ADC2 at the counter top; toggle a test pin in the ADC interrupt (AGENTS.md allows PC3 while SD4 stays low).
+- **Do:** logic power only, SD1–SD4 low. TIM1 CH1–3 at 20 kHz with fixed duties (for example 0.25 / 0.50 / 0.75); trigger ADC2 at the counter top; toggle a test pin in the ADC interrupt (AGENTS.md allows PC3 while SD4 stays low).
 - **Done when:** the scope shows 20 kHz, the three pulses centered on each other, the ADC sample in the middle of the period, and a duty change taking effect at an update event, never mid-period.
 
 ### Stage 5 — The FOC math on the chip
@@ -107,7 +107,7 @@ Register addresses (RM0440, check against the reference manual): GPIOA `0x4800_0
 
 What adopting this plan changed:
 
-- `AGENTS.md` "当前阶段": the current position is a stage number (now stage 1); moving to the next stage needs your explicit confirmation, recorded there with the date. Each stage's allowed scope is listed there: stages 1–4 USB power only with SD1–SD4 low, `lib/foc` in a test firmware from stage 5, the FOC ISR from stage 6, and stage 7 not allowed until the R-02 decision is recorded.
+- `AGENTS.md` "当前阶段": the current position is a stage number; moving to the next stage needs your explicit confirmation, recorded there with the date. Each stage's allowed scope is listed there: stages 1–4 USB power only with SD1–SD4 low, `lib/foc` in a test firmware from stage 5, the FOC ISR from stage 6, and stage 7 not allowed until the R-02 decision is recorded.
 - `AGENTS.md` "安全默认值": one explicit exception, PWM on the MCU pins in stages 4–6 while DCBUS is disconnected and SD1–SD4 are low.
 - `development_roadmap.md` stays as the long-term product plan. Mapping: stage 1 = M1-09 and the software-path part of M1-08 (the M1-08 waveform, R-18, moves to the stage 7 entry), stages 2–4 = M2, stage 5 = M3 ARM/WCET, stage 6 = M2/M3 ISR, stage 7 = M4.
 - Unchanged: the hardware-test rules in `AGENTS.md` (board identity, supply, e-stop, recovery, evidence) and the R-02 rule for powered closed loop.
