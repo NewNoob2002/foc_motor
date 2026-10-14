@@ -5,7 +5,8 @@ CompileFlags:
     - -mfp16-format=ieee
     - -fno-reorder-functions
 ---
+# lib/foc is not in the firmware build yet; the host tests compile it.
 If:
-  PathMatch: tests/host/foc/.*
+  PathMatch: (lib/foc|tests/host/foc)/.*
 CompileFlags:
   CompilationDatabase: build/host

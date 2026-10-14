@@ -1,6 +1,6 @@
 # FOC Knowledge Base
 
-Status: 2026-10-14. One place for what the M3 host-only study has established: the full FOC workflow, the design rules behind it, the numbers measured in simulation, the number format, and the path to the board. Exercises and step-by-step instructions stay in [the study guide](./foc_study_guide.md); hardware evidence in [hardware_reference.md](./hardware_reference.md); stage gates in [development_roadmap.md](./development_roadmap.md); risks in [risk_list.md](./risk_list.md).
+Status: 2026-10-14. One place for what the M3 host-only study has established: the full FOC workflow, the design rules behind it, the numbers measured in simulation, the number format, and the path to the board. Exercises and step-by-step instructions stay in [the study guide](./foc_study_guide.md); hardware evidence in [hardware_reference.md](../hardware/hardware_reference.md); stage gates in [development_roadmap.md](../plan/development_roadmap.md); risks in [risk_list.md](../plan/risk_list.md).
 
 Everything below "measured" was measured in the host simulation with illustrative motor values. Nothing here has been verified on hardware.
 
@@ -193,16 +193,16 @@ First powered sequence, once M4 is open: low-voltage current-limited supply -> o
 |---|---|
 | `lib/foc/` | Kernel: `foc_transform` (given), `foc_pi` (Exercise 1), `foc_svpwm` (Exercise 2) |
 | `tests/host/foc/test_*.c` | Unit tests (`-DFOC_EXERCISES=ON` adds PI, SVPWM, `sim_current_loop`) |
-| `tests/host/foc/sim_current_loop.c` | Plant + current loop, the CTest reference version |
-| `tests/host/foc/sim_speed_loop.c` | Your Exercise 3 / Exp. 5 copy with the speed loop (not a CTest) |
-| `tests/host/foc/sim_svpwm.c`, `plot_svpwm.py` | SVPWM checklist and plots |
-| `tests/host/foc/plot_sim.py` | Overlay up to 4 CSVs; `--xlim START END` (ms); `-o file.png`; dashed `omega_ref` if present |
+| `tests/host/foc/sim/sim_current_loop.c` | Plant + current loop, the CTest reference version |
+| `tests/host/foc/sim/sim_speed_loop.c` | Your Exercise 3 / Exp. 5 copy with the speed loop (not a CTest) |
+| `tests/host/foc/sim/sim_svpwm.c`, `plot_svpwm.py` | SVPWM checklist and plots |
+| `tests/host/foc/sim/plot_sim.py` | Overlay up to 4 CSVs; `--xlim START END` (ms); `-o file.png`; dashed `omega_ref` if present |
 
 ```sh
 cmake -S tests/host/foc -B build/host -DCMAKE_BUILD_TYPE=Debug -DFOC_EXERCISES=ON
 cmake --build build/host && ctest --test-dir build/host --output-on-failure
 build/host/sim_speed_loop --csv > build/host/speed.csv
-uv run tests/host/foc/plot_sim.py build/host/speed.csv
+uv run tests/host/foc/sim/plot_sim.py build/host/speed.csv
 ```
 
 Reading: SimpleFOC documentation (intuition), ST MCSDK and TI motor-control application notes (sampling and timing practice), De Doncker et al., *Advanced Electrical Drives* (derivations).

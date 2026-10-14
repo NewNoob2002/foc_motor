@@ -25,7 +25,7 @@
 
 /*
  * Illustrative 4006 KV380-class values, NOT measurements of the real motor
- * (see docs/hardware_reference.md section 10). psi follows from KV:
+ * (see docs/hardware/hardware_reference.md section 10). psi follows from KV:
  * psi = 60 / (sqrt(3) * 2 * pi * KV * pole_pairs).
  */
 #define MOTOR_POLE_PAIRS 7
@@ -40,7 +40,7 @@
 #define TS_S             (1.0 / PWM_HZ)
 #define PLANT_SUBSTEPS   25
 #define ENCODER_COUNTS   4096
-#define SIM_END_S        0.080
+#define SIM_END_S        0.200
 #define CSV_DECIMATION   1
 
 /*
@@ -132,15 +132,25 @@ static foc_abc_t current_loop_step(current_loop_t* c, float ia, float ic, float 
     return duty;
 }
 
-static foc_dq_t reference_at(double t) {
-    foc_dq_t ref = {.d = 0.0f, .q = 0.0f};
+// static foc_dq_t reference_at(double t) {
+//     foc_dq_t ref = {.d = 0.0f, .q = 0.0f};
 
-    if (t >= 0.040) {
-        ref.q = -1.0f;
-    } else if (t >= 0.005) {
-        ref.q = 1.0f;
+//     if (t >= 0.040) {
+//         ref.q = -1.0f;
+//     } else if (t >= 0.005) {
+//         ref.q = 1.0f;
+//     }
+//     return ref;
+// }
+
+static float speed_reference_at(double t) {
+    if (t >= 0.120) {
+        return 100.0f;
     }
-    return ref;
+    if (t >= 0.005) {
+        return 300.0f;
+    }
+    return 0.0f;
 }
 
 static bool finite_all(const double* v, int n) {
@@ -168,6 +178,20 @@ int main(int argc, char** argv) {
 
     foc_pi_reset(&loop.pi_d);
     foc_pi_reset(&loop.pi_q);
+    /* Speed loop: iq -> speed is Kt / (J s); see the study guide for the tuning. */
+    const double kt = 1.5 * MOTOR_POLE_PAIRS * MOTOR_PSI_WB; /* N·m per A */
+    const double wsc = 2.0 * SIM_PI * 50.0;                  /* 50 Hz bandwidth */
+    const double speed_kp = wsc * MOTOR_J_KGM2 / kt;
+    foc_pi_t speed_pi = {
+        .kp = (float)speed_kp,
+        .ki = (float)(speed_kp * wsc / 4.0),
+        .out_min = -3.0f, /* the PI output IS iq_ref, so these are the current limits */
+        .out_max = 3.0f,
+    };
+    foc_pi_reset(&speed_pi);
+    float theta_prev = encoder_theta_e(&motor); /* angle at the previous speed update */
+    float omega_ref = 0.0f;
+    float iq_cmd = 0.0f; /* held constant between speed updates */
 
     if (csv) {
         printf("t_s,id_ref,iq_ref,id,iq,vd,vq,duty_a,duty_b,duty_c,omega_m\n");
@@ -177,7 +201,22 @@ int main(int argc, char** argv) {
         double t = k * TS_S;
         double ia;
         double ic;
-        foc_dq_t i_ref = reference_at(t);
+        if (k % 20 == 0) {
+            float theta = encoder_theta_e(&motor);
+            float dtheta = theta - theta_prev;
+            /* Wrap dtheta into (-pi, pi] */
+            if (dtheta <= -SIM_PI) {
+                dtheta += 2.0f * (float)SIM_PI;
+            }
+            if (dtheta > SIM_PI) {
+                dtheta -= 2.0f * (float)SIM_PI;
+            }
+            theta_prev = theta;
+            float omega_meas = (float)(dtheta / (20.0 * TS_S) / MOTOR_POLE_PAIRS);
+            omega_ref = speed_reference_at(t);
+            iq_cmd = foc_pi_step(&speed_pi, omega_ref - omega_meas, (float)(TS_S * 20.0));
+        }
+        foc_dq_t i_ref = {.d = 0.0f, .q = iq_cmd};
         foc_dq_t i_meas;
         foc_dq_t v_cmd;
 

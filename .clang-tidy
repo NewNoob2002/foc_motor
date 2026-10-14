@@ -1,0 +1,80 @@
+---
+# Repository-wide policy for project-owned C11/C++20 code. Use a CMake
+# compile_commands.json so feature flags, includes and language modes are real.
+# Formatting belongs to .clang-format; vendor code is not a rename/fix target.
+# Preserve explicit enum widths and GCC/Clang-supported pragma once.
+# Linux libc does not provide Annex K *_s replacements; retain other security checks.
+Checks: >-
+  -*,
+  clang-analyzer-*,
+  -clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling,
+  bugprone-*,
+  -bugprone-easily-swappable-parameters,
+  performance-*,
+  -performance-enum-size,
+  -performance-no-int-to-ptr,
+  portability-*,
+  -portability-avoid-pragma-once,
+  -portability-no-assembler,
+  modernize-use-nullptr,
+  modernize-use-override,
+  modernize-use-equals-default,
+  modernize-use-equals-delete,
+  readability-identifier-naming,
+  cppcoreguidelines-slicing,
+  cppcoreguidelines-virtual-class-destructor
+
+# Compiler errors already fail. Promote analyzer/configuration/lifetime findings;
+# naming and modernization advice stays visible without forcing bulk rewrites.
+WarningsAsErrors: >-
+  clang-diagnostic-*,
+  clang-tidy-config,
+  clang-analyzer-*,
+  bugprone-use-after-move,
+  bugprone-dangling-handle
+
+# Headers in every first-party module, including tests and optional tools.
+# Main translation units are selected separately: HeaderFilterRegex does not
+# exclude vendor source files passed on the command line.
+HeaderFilterRegex: '(^|/)(App|Boot|Common|Drivers/BSP|Platform|Libraries/(Bq40z50|Mp2762a))/'
+SystemHeaders: false
+FormatStyle: file
+
+CheckOptions:
+  - key: readability-identifier-naming.NamespaceCase
+    value: lower_case
+  - key: readability-identifier-naming.ClassCase
+    value: CamelCase
+  - key: readability-identifier-naming.StructCase
+    value: CamelCase
+  - key: readability-identifier-naming.EnumCase
+    value: CamelCase
+  - key: readability-identifier-naming.FunctionCase
+    value: lower_case
+  - key: readability-identifier-naming.MethodCase
+    value: lower_case
+  - key: readability-identifier-naming.VariableCase
+    value: lower_case
+  - key: readability-identifier-naming.GlobalConstantCase
+    value: lower_case
+  - key: readability-identifier-naming.GlobalConstantIgnoredRegexp
+    value: '^k[A-Z][a-zA-Z0-9]*$'
+  - key: readability-identifier-naming.LocalConstantCase
+    value: lower_case
+  - key: readability-identifier-naming.LocalConstantIgnoredRegexp
+    value: '^k[A-Z][a-zA-Z0-9]*$'
+  - key: readability-identifier-naming.MemberCase
+    value: lower_case
+  - key: readability-identifier-naming.PrivateMemberCase
+    value: lower_case
+  - key: readability-identifier-naming.PrivateMemberSuffix
+    value: _
+  - key: readability-identifier-naming.ParameterCase
+    value: lower_case
+  # Fixed CANopen callback/linker ABI names, newlib syscalls, and CMSIS interrupt handlers.
+  - key: readability-identifier-naming.FunctionIgnoredRegexp
+    value: '^(_.*|.*_Handler|CO_.*|__real_.*|__wrap_.*)$'
+  - key: bugprone-reserved-identifier.AllowedIdentifiers
+    value: '^_.*;^__real_.*;^__wrap_.*'
+  - key: modernize-use-override.IgnoreDestructors
+    value: 'false'

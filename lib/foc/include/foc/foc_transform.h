@@ -3,7 +3,7 @@
 /*
  * Clarke and Park transforms.
  *
- * Conventions (frozen for this project, see docs/foc_study_guide.md):
+ * Conventions (frozen for this project, see docs/study/foc_study_guide.md):
  * - SI units: amperes or volts in, same unit out; angles in radians.
  * - Positive phase sequence is A -> B -> C.
  * - Clarke is amplitude-invariant: a balanced set with peak X gives an

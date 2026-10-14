@@ -120,7 +120,7 @@ CI 显式固定 `BUILD_VERSION=v4.4.0-12700-g8dafb9a897da` 后，远端 HEX/BIN 
 | ACM1 板端控制台 | FAIL/PENDING | ACM1 接开发板后，两次 SYSRESETREQ 启动仍捕获 0 B；同时 PC 正常、PB6/PB7=AF7、CR1=`0x0d`、BRR=`0x05c4`、TDR=`0x0a`，待检查 PB6->RXD/GND 物理路径 |
 | 板载 CH340 控制台 | PASS | Type-C `/dev/ttyUSB0`，921600 8N1；两次完整启动各收到 banner、安全消息和 `seq=0..15`，共 2520 B，无乱码、丢日志或 async backend 错误 |
 
-本次原始证据：`flash_uart_dma_921600.log` SHA-256 `c3fe2d6b10cd918ece217a470c10f52cc8c6cf8a76306a7c85c7fa0e499ec556`；`uart_dma_921600.log` SHA-256 `b3ebe1fb0bb62f44924775536bb0b50bb597a7ce4e0f435ef8ab352053063e83`；`openocd_uart_dma_registers.log` SHA-256 `089ab15f6e37b91e3b7fe22a8694b62b1203e0f36c3e6425dca184db18ce38ef`。受控副本与说明位于 [`docs/evidence/m1/`](./evidence/m1/README.md)。
+本次原始证据：`flash_uart_dma_921600.log` SHA-256 `c3fe2d6b10cd918ece217a470c10f52cc8c6cf8a76306a7c85c7fa0e499ec556`；`uart_dma_921600.log` SHA-256 `b3ebe1fb0bb62f44924775536bb0b50bb597a7ce4e0f435ef8ab352053063e83`；`openocd_uart_dma_registers.log` SHA-256 `089ab15f6e37b91e3b7fe22a8694b62b1203e0f36c3e6425dca184db18ce38ef`。受控副本与说明位于 [`docs/evidence/m1/`](./m1/README.md)。
 
 原始日志位于 `build/hil/`。一次额外的独立 `verify_image` 诊断触发了 OpenOCD 目标端 CRC 算法 double fault；该次结果不计入通过证据。随后通过 SYSRESETREQ 恢复，PC 再次确认在正常 idle 路径。烧录命令自身的写入和 verify 无错误。
 

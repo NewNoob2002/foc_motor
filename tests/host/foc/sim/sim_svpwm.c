@@ -5,7 +5,7 @@
  *
  * Sweeps a voltage vector through one electrical turn at several lengths,
  * runs foc_svpwm() and reports which stage of exercise 2 already works
- * (docs/foc_study_guide.md). test_svpwm stays the pass gate; this program
+ * (docs/study/foc_study_guide.md). test_svpwm stays the pass gate; this program
  * only shows progress.
  *
  * Usage: sim_svpwm          print the stage checklist

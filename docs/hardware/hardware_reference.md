@@ -13,11 +13,11 @@
 
 | 文档 ID | 仓库文件 | 页数/版本 | SHA-256 | 主要用途与限制 |
 |---|---|---|---|---|
-| `DOC-MAIN-SCH` | [主板原理图](./Schematic_浩盛单路电机开发板V2.0.pdf) | 1 页，REV1.0，图纸日期 2025-05-28 | `e3d94ad381ba5c3ac6b71007ef6e85fbde98f83957f7912b497e3c05d2b35cc8` | MCU、四桥臂、采样和接口网络；未提供 PCB、BOM、ERC 报告 |
-| `DOC-ENC-SCH` | [编码器板原理图](./Schematic_KTH7823编码器板V1.0.pdf) | 1 页，REV1.0，图纸日期 2025-08-13 | `3e374bcd43ead46533bedef18c1e9db0f5a106ec55c1c43d98b5d0c0f250ba94` | KTH7823 型号、ABZ/SPI 两组接口和 3.3 V 供电 |
-| `DOC-MCU-DS` | [STM32G431 数据手册](./STM32G431RBT6_规格书.PDF) | 198 页，DS12589 Rev 1，2019-05 | `3546211bc168e1c71440f62854d7faabe404d75ec7e4cfd34288892276bcc847` | MCU 能力、引脚复用和电气参数；版本较旧且 PDF 元数据显示为其他 G4 型号，M1 需补受控最新版、RM0440 和 errata |
-| `DOC-GATE-DS` | [EG2104 数据手册](./栅极驱动芯片_EG2104_规格书.PDF) | 12 页，V1.1 | `1b4af9deaf026026a4c4b0e4b54b7e35d2226a051b9b501569fb8b6c6e88d920` | 输入、SD 真值表、传播延迟、死区、自举条件 |
-| `DOC-ENC-DS` | [KTH7823 数据手册](./KTH7823.pdf) | 31 页 | `3ebc20e404700dc050ee6b10e3792a6a28038b5fa737ab688f0f41ad59e6fa52` | 角度性能、SPI、ABZ、PWM、订货型号 |
+| `DOC-MAIN-SCH` | [主板原理图](./schematics/Schematic_浩盛单路电机开发板V2.0.pdf) | 1 页，REV1.0，图纸日期 2025-05-28 | `e3d94ad381ba5c3ac6b71007ef6e85fbde98f83957f7912b497e3c05d2b35cc8` | MCU、四桥臂、采样和接口网络；未提供 PCB、BOM、ERC 报告 |
+| `DOC-ENC-SCH` | [编码器板原理图](./schematics/Schematic_KTH7823编码器板V1.0.pdf) | 1 页，REV1.0，图纸日期 2025-08-13 | `3e374bcd43ead46533bedef18c1e9db0f5a106ec55c1c43d98b5d0c0f250ba94` | KTH7823 型号、ABZ/SPI 两组接口和 3.3 V 供电 |
+| `DOC-MCU-DS` | [STM32G431 数据手册](./datasheets/STM32G431RBT6_规格书.PDF) | 198 页，DS12589 Rev 1，2019-05 | `3546211bc168e1c71440f62854d7faabe404d75ec7e4cfd34288892276bcc847` | MCU 能力、引脚复用和电气参数；版本较旧且 PDF 元数据显示为其他 G4 型号，M1 需补受控最新版、RM0440 和 errata |
+| `DOC-GATE-DS` | [EG2104 数据手册](./datasheets/栅极驱动芯片_EG2104_规格书.PDF) | 12 页，V1.1 | `1b4af9deaf026026a4c4b0e4b54b7e35d2226a051b9b501569fb8b6c6e88d920` | 输入、SD 真值表、传播延迟、死区、自举条件 |
+| `DOC-ENC-DS` | [KTH7823 数据手册](./datasheets/KTH7823.pdf) | 31 页 | `3ebc20e404700dc050ee6b10e3792a6a28038b5fa737ab688f0f41ad59e6fa52` | 角度性能、SPI、ABZ、PWM、订货型号 |
 
 尚缺：STM32G431 最新数据手册、RM0440、对应 errata、COS722MR 手册、D0N70N06 MOSFET 手册、完整 BOM、PCB/layout、母线/散热/线束规范。缺失项对应 `R-06`、`R-12`、`R-16`，在取得资料前不得据理想计算冻结功率额定值。
 
@@ -38,7 +38,7 @@
 - `HW-UART-001` — `CONFIRMED`：主板 `USART1_TX`/`USART1_RX` 分别连接 STM32G431 的 PB6/PB7，并经 U26 CH340N 接到板载 Type-C。2026-09-05 起固件禁用 USART1，不再使用该日志路径。证据：`DOC-MAIN-SCH` U3/U26 与 USART1 网络；`DOC-MCU-DS` GPIO alternate-function table。
 - `HW-UART-002` — `CONFIRMED`：当前 USART3 日志 TX 使用 Zephyr deferred logging + asynchronous UART backend。devicetree 的 DMA selector `2` 在当前 STM32 DMA v2 驱动中映射到 DMA1 Channel 3，DMAMUX request `29` 对应 USART3_TX；USART3 IRQ 39 和 DMA1 IRQ 均为普通优先级 5。request 29 与本机固定 STM32 HAL 的 `DMA_REQUEST_USART3_TX` / `LL_DMAMUX_REQ_USART3_TX` 一致。该路径只服务诊断线程，FOC ISR 禁止调用日志或 UART API。
 - `HW-UART-003` — `CONFIRMED`：排针 H2 的 6 脚为 USART3_TX/PB10（U3 第 30 脚），5 脚为 USART3_RX/PB11（U3 第 33 脚），1 脚为 DGND；PB10/PB11 使用 AF7。Zephyr console 和 shell-uart 均选 USART3，921600 8N1。外接 3.3 V TTL 转接器 RX 接 H2/6、TX 接 H2/5、GND 接 H2/1；用户确认本次连接到 `/dev/ttyUSB0`。证据：`DOC-MAIN-SCH` U3/H2；固定 HAL pinctrl 文件 `stm32g431r(6-8-b)tx-pinctrl.dtsi`。
-- 2026-08-22 的板载 CH340 历史验证曾通过 `/dev/ttyUSB0` 完整收到两次启动共 2520 B；该记录见 `docs/m1_build_evidence.md` 第 5 节，不代表当前排针接线。Linux 串口编号及无独立序列号的 CH340 by-id 名称不能单独区分板载和外接转换器，必须结合接线与本次固件验证。
+- 2026-08-22 的板载 CH340 历史验证曾通过 `/dev/ttyUSB0` 完整收到两次启动共 2520 B；该记录见 `docs/evidence/m1_build_evidence.md` 第 5 节，不代表当前排针接线。Linux 串口编号及无独立序列号的 CH340 by-id 名称不能单独区分板载和外接转换器，必须结合接线与本次固件验证。
 - 当前 DMA 分配是 M1 诊断基线。M2 接入 ADC2 DMA 时优先选择不冲突的 DMA selector；若硬件/驱动约束形成冲突，再调整 UART TX DMA，不改变 FOC ISR 禁止日志的边界。
 
 ### 3.3 PWM 与四桥臂
@@ -156,4 +156,4 @@ Context7 可用的最近版本化官方文档 ID 为 `/zephyrproject-rtos/zephyr
 
 电流和功率上限最终需同时满足电机、功率板、采样链、电源及散热约束。电机 18 A 标称值不等于 FOC 的相电流或 `Iq` 限值，不直接写入固件。
 
-M0 尚需确认的系统输入与后续测量分工见 [开发路线图](./development_roadmap.md) 的“M0 参数确认清单”。
+M0 尚需确认的系统输入与后续测量分工见 [开发路线图](../plan/development_roadmap.md) 的“M0 参数确认清单”。
