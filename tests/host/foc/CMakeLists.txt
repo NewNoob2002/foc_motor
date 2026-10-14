@@ -7,7 +7,7 @@ if(NOT CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
 endif()
 
 # Off by default so CI stays green while the PI/SVPWM exercises are open;
-# turn on to check your own implementation (docs/foc_study_guide.md).
+# turn on to check your own implementation (docs/study/foc_study_guide.md).
 option(FOC_EXERCISES "Register PI, SVPWM and closed-loop simulation tests" OFF)
 
 set(FOC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../../lib/foc)
@@ -41,9 +41,9 @@ foc_host_executable(foc_host_smoke smoke.c)
 foc_host_executable(test_transform test_transform.c)
 foc_host_executable(test_pi test_pi.c)
 foc_host_executable(test_svpwm test_svpwm.c)
-foc_host_executable(sim_current_loop sim_current_loop.c)
-foc_host_executable(sim_svpwm sim_svpwm.c)
-foc_host_executable(sim_speed_loop sim_speed_loop.c)
+foc_host_executable(sim_current_loop sim/sim_current_loop.c)
+foc_host_executable(sim_svpwm sim/sim_svpwm.c)
+foc_host_executable(sim_speed_loop sim/sim_speed_loop.c)
 
 foc_host_test(foc_host_smoke)
 foc_host_test(test_transform)

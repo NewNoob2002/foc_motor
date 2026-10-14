@@ -6,8 +6,8 @@
 
 Usage:
     build/host/sim_current_loop --csv > build/host/sim.csv
-    uv run tests/host/foc/plot_sim.py build/host/sim.csv
-    uv run tests/host/foc/plot_sim.py build/host/bw1000.csv build/host/bw2000.csv --xlim 4 10 -o build/host/bw.png
+    uv run tests/host/foc/sim/plot_sim.py build/host/sim.csv
+    uv run tests/host/foc/sim/plot_sim.py build/host/bw1000.csv build/host/bw2000.csv --xlim 4 10 -o build/host/bw.png
 
 Each file is labelled with its name, so name the CSVs after the experiment.
 """

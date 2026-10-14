@@ -2,12 +2,12 @@
 # requires-python = ">=3.10"
 # dependencies = ["matplotlib>=3.8"]
 # ///
-"""Plot sim_svpwm CSV output (exercise 2, docs/foc_study_guide.md).
+"""Plot sim_svpwm CSV output (exercise 2, docs/study/foc_study_guide.md).
 
 Usage:
     build/host/sim_svpwm --csv > build/host/svpwm.csv
-    uv run tests/host/foc/plot_svpwm.py build/host/svpwm.csv
-    uv run tests/host/foc/plot_svpwm.py build/host/svpwm.csv --ratio 0.866 --angle 20 -o svpwm.png
+    uv run tests/host/foc/sim/plot_svpwm.py build/host/svpwm.csv
+    uv run tests/host/foc/sim/plot_svpwm.py build/host/svpwm.csv --ratio 0.866 --angle 20 -o svpwm.png
 
 --ratio picks the vector length (fraction of Vbus/sqrt(3)) for the duty and
 PWM-period panels; --angle picks the electrical angle of the PWM period.

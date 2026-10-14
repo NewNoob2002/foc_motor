@@ -21,7 +21,7 @@
 
 ## 2. 硬件分析
 
-依据仓库中的主板原理图、编码器板原理图及器件手册，已确认的资源如下。逐项证据、PDF 哈希和结论编号见 [hardware_reference.md](./hardware_reference.md)。
+依据仓库中的主板原理图、编码器板原理图及器件手册，已确认的资源如下。逐项证据、PDF 哈希和结论编号见 [hardware_reference.md](../hardware/hardware_reference.md)。
 
 ### 2.1 MCU
 
@@ -216,20 +216,20 @@ M1 控制台固定为排针 H2 USART3（PB10 TX/PB11 RX）921600 8N1，板载 Ty
 
 ## 9. 尚待确认的系统决策
 
-- 电机规格已由用户提供：4006、12 槽 14 极（7 极对）、KV380；详见 [电机输入规格](./hardware_reference.md#10-电机输入规格2026-09-05)。170 Ω 电阻单位、18 A/60 s 的电流定义与热条件、450 W 功率定义尚待核对。
-- 尚需确认工作母线及电源、长期/峰值电流、目标与最高机械转速、负载/运行时长、允许的 PWM 范围；逐项关闭要求见 [M0 参数清单](./development_roadmap.md#m0-参数确认清单)。
+- 电机规格已由用户提供：4006、12 槽 14 极（7 极对）、KV380；详见 [电机输入规格](../hardware/hardware_reference.md#10-电机输入规格2026-09-05)。170 Ω 电阻单位、18 A/60 s 的电流定义与热条件、450 W 功率定义尚待核对。
+- 尚需确认工作母线及电源、长期/峰值电流、目标与最高机械转速、负载/运行时长、允许的 PWM 范围；逐项关闭要求见 [M0 参数清单](../plan/development_roadmap.md#m0-参数确认清单)。
 - CAN/CANopen 当前延期；恢复范围时再确认 CiA 402、隔离、连接器和终端策略。
 - 编码器运行时只用 ABZ 是否可接受；如必须持续绝对角，需硬件改版。
 - 硬件过流阈值、关断时间和复位策略。
 
 ## 10. 参考资料
 
-- [主板原理图](./Schematic_浩盛单路电机开发板V2.0.pdf)
-- [编码器板原理图](./Schematic_KTH7823编码器板V1.0.pdf)
-- [STM32G431 数据手册](./STM32G431RBT6_规格书.PDF)
-- [EG2104 数据手册](./栅极驱动芯片_EG2104_规格书.PDF)
-- [KTH7823 数据手册](./KTH7823.pdf)
-- [硬件证据与结论索引](./hardware_reference.md)
+- [主板原理图](../hardware/schematics/Schematic_浩盛单路电机开发板V2.0.pdf)
+- [编码器板原理图](../hardware/schematics/Schematic_KTH7823编码器板V1.0.pdf)
+- [STM32G431 数据手册](../hardware/datasheets/STM32G431RBT6_规格书.PDF)
+- [EG2104 数据手册](../hardware/datasheets/栅极驱动芯片_EG2104_规格书.PDF)
+- [KTH7823 数据手册](../hardware/datasheets/KTH7823.pdf)
+- [硬件证据与结论索引](../hardware/hardware_reference.md)
 - [Zephyr supported releases](https://docs.zephyrproject.org/latest/releases/)
 - [Zephyr interrupt management](https://docs.zephyrproject.org/latest/kernel/services/interrupts.html)
 - [Zephyr testing with Twister](https://docs.zephyrproject.org/latest/develop/test/twister.html)

@@ -12,9 +12,9 @@ The consolidated reference (workflow, design rules, measured results, float vs f
 | `lib/foc/include/foc/foc_pi.h`, `src/foc_pi.c` | PI regulator with anti-windup | **Exercise 1**: done (integral clamping), `test_pi` passes |
 | `lib/foc/include/foc/foc_svpwm.h`, `src/foc_svpwm.c` | Space-vector modulation | **Exercise 2**: done (min-max injection), `test_svpwm` passes |
 | `tests/host/foc/test_*.c` | Unit tests; `foc_test.h` is a tiny CHECK helper | |
-| `tests/host/foc/sim_current_loop.c` | Simulated PMSM + closed d/q current loop | **Exercise 3**: loop closes with your PI and SVPWM; experiments open |
-| `tests/host/foc/plot_sim.py` | Plot the simulation | |
-| `tests/host/foc/sim_svpwm.c`, `plot_svpwm.py` | SVPWM progress checklist and plots for exercise 2 | Learning aid, not a CTest |
+| `tests/host/foc/sim/sim_current_loop.c` | Simulated PMSM + closed d/q current loop | **Exercise 3**: loop closes with your PI and SVPWM; experiments open |
+| `tests/host/foc/sim/plot_sim.py` | Plot the simulation | |
+| `tests/host/foc/sim/sim_svpwm.c`, `plot_svpwm.py` | SVPWM progress checklist and plots for exercise 2 | Learning aid, not a CTest |
 
 `lib/foc` is pure C11 `float`: no Zephyr, CMSIS, HAL or board headers (standard `<math.h>` such as `sqrtf` is fine). The board build will compile these same files. The headers carry the contract; the tests enforce it.
 
@@ -33,12 +33,12 @@ cmake --build build/host && ctest --test-dir build/host --output-on-failure
 # Simulation summary / plot
 build/host/sim_current_loop
 build/host/sim_current_loop --csv > build/host/sim.csv
-uv run tests/host/foc/plot_sim.py build/host/sim.csv
+uv run tests/host/foc/sim/plot_sim.py build/host/sim.csv
 
 # SVPWM progress checklist / plot (exercise 2)
 build/host/sim_svpwm
 build/host/sim_svpwm --csv > build/host/svpwm.csv
-uv run tests/host/foc/plot_svpwm.py build/host/svpwm.csv
+uv run tests/host/foc/sim/plot_svpwm.py build/host/svpwm.csv
 ```
 
 Builds use `-Wall -Wextra -Werror` with ASan/UBSan. `lib/foc` also uses `-Wdouble-promotion`: on the Cortex-M4F, `double` math is emulated in software, so write `0.5f`, `sqrtf`, `fabsf`.
@@ -77,8 +77,8 @@ Read `foc_svpwm.h`. The simplest correct method is min-max (zero-sequence) injec
 ```sh
 cmake --build build/host && build/host/sim_svpwm      # checklist, prints the first failing point
 build/host/sim_svpwm --csv > build/host/svpwm.csv    # exits non-zero until all steps pass; the CSV is still written
-uv run tests/host/foc/plot_svpwm.py build/host/svpwm.csv                 # opens a window
-uv run tests/host/foc/plot_svpwm.py build/host/svpwm.csv --ratio 0.5 -o build/host/svpwm.png
+uv run tests/host/foc/sim/plot_svpwm.py build/host/svpwm.csv                 # opens a window
+uv run tests/host/foc/sim/plot_svpwm.py build/host/svpwm.csv --ratio 0.5 -o build/host/svpwm.png
 ```
 
 `sim_svpwm` sweeps the command vector through 360 electrical degrees at lengths 0.5, 0.866, 1.0 and 1.3 times the linear limit `Vbus/sqrt(3)` (0.866 of it is `Vbus/2`). The plot has four panels:
@@ -126,13 +126,13 @@ Pass: `test_svpwm`.
 
 With exercises 1 and 2 done, `sim_current_loop` passes: your PI and SVPWM already close the loop. This exercise is about understanding and tuning it. Experiments 1, 2 and 4 change `#define`s; experiments 3 and 5 are code you write.
 
-**Before you start.** The experiments edit `tests/host/foc/sim_current_loop.c`. Commit it (or copy it) first so you can go back to the default after each experiment. While an experiment is active, the summary may print `FAIL:` lines: the pass limits are set for the default values, so that is expected. Restore the default and check that `ctest` passes again when you are done.
+**Before you start.** The experiments edit `tests/host/foc/sim/sim_current_loop.c`. Commit it (or copy it) first so you can go back to the default after each experiment. While an experiment is active, the summary may print `FAIL:` lines: the pass limits are set for the default values, so that is expected. Restore the default and check that `ctest` passes again when you are done.
 
 **Workflow.** Name each CSV after the experiment; `plot_sim.py` overlays up to four files and labels them by file name. `--xlim` zooms in (in ms) and rescales the y axes.
 
 ```sh
 cmake --build build/host && build/host/sim_current_loop --csv > build/host/bw1000.csv   # summary goes to the terminal
-uv run tests/host/foc/plot_sim.py build/host/bw1000.csv build/host/bw2000.csv --xlim 4.5 8
+uv run tests/host/foc/sim/plot_sim.py build/host/bw1000.csv build/host/bw2000.csv --xlim 4.5 8
 ```
 
 Answers are folded; look at your own plot before opening them. The numbers were measured with your `foc_pi.c` and `foc_svpwm.c`.
@@ -191,7 +191,7 @@ Why: pole-zero cancellation makes the open loop an ideal integrator `wc/s`, whic
 | R × 0.5 | 0.962 A | 0.077 A | Slow tail: iq is still up to 0.08 A off 2 ms after a step |
 | R × 2 | 1.203 A | 0.010 A | Overshoot, then fast |
 
-Why: `Kp = L * wc`, so an L error scales the real bandwidth by the same factor; L × 3 tuning is a 3 kHz loop, and experiment 1 showed what that does. R only places the PI zero; a wrong R leaves a slow pole-zero pair, which costs settling time but not stability. Wrong L hurts stability, wrong R hurts accuracy. Measure both on the real motor before the first closed-loop run (`docs/hardware_reference.md`, section 10: the spec's 170 Ω is probably 170 mΩ).
+Why: `Kp = L * wc`, so an L error scales the real bandwidth by the same factor; L × 3 tuning is a 3 kHz loop, and experiment 1 showed what that does. R only places the PI zero; a wrong R leaves a slow pole-zero pair, which costs settling time but not stability. Wrong L hurts stability, wrong R hurts accuracy. Measure both on the real motor before the first closed-loop run (`docs/hardware/hardware_reference.md`, section 10: the spec's 170 Ω is probably 170 mΩ).
 </details>
 
 #### Experiment 3 — Decoupling feed-forward (you write it)
