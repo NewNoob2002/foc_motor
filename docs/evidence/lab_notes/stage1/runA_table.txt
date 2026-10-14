@@ -1,0 +1,82 @@
+n | stop reason | PC | GPIOA_MODER | GPIOA_ODR | GPIOB_MODER | GPIOB_ODR | SD output high
+1 | watchpoint | 08005FDC | ABFFFFFF | 00000000 | FFFFFEBF | 00000000 | none
+2 | watchpoint | 08005FF0 | ABFFFFFF | 00000000 | FFFFFEBF | 00000000 | none
+3 | watchpoint | 08006016 | ABFFFFFF | 00000000 | FFFFFEBF | 00000000 | none
+4 | watchpoint | 0800603E | ABFFFFFF | 00000000 | FFFFFEBF | 00000000 | none
+5 | watchpoint | 08006068 | ABFFFFFF | 00000000 | FFEFFEBF | 00000000 | none
+6 | watchpoint | 08005FDC | ABFFFFFF | 00000000 | FFEFFEBF | 00000000 | none
+7 | watchpoint | 08005FF0 | ABFFFFFF | 00000000 | FFEFFEBF | 00000000 | none
+8 | watchpoint | 0800601A | ABFFFFFF | 00000000 | FFEFFEBF | 00000000 | none
+9 | watchpoint | 08006042 | ABFFFFFF | 00000000 | FFEFFEBF | 00000000 | none
+10 | watchpoint | 08006068 | ABFFFFFF | 00000000 | FFAFFEBF | 00000000 | none
+11 | watchpoint | 080060B0 | ABFFFFFF | 00000000 | FFAFFEBF | 00000000 | none
+12 | watchpoint | 08005FEC | ABFFFFFF | 00000000 | FFAFFEBF | 00000000 | none
+13 | watchpoint | 08006016 | ABFFFFFF | 00000000 | FFAFFEBF | 00000000 | none
+14 | watchpoint | 0800603E | ABFFFFFF | 00000000 | FFAFFEBF | 00000000 | none
+15 | watchpoint | 08006068 | ABFFFFFD | 00000000 | FFAFFEBF | 00000000 | none
+16 | watchpoint | 080060B0 | ABFFFFFD | 00000000 | FFAFFEBF | 00000000 | none
+17 | watchpoint | 08005FEC | ABFFFFFD | 00000000 | FFAFFEBF | 00000000 | none
+18 | watchpoint | 0800601A | ABFFFFFD | 00000000 | FFAFFEBF | 00000000 | none
+19 | watchpoint | 08006042 | ABFFFFFD | 00000000 | FFAFFEBF | 00000000 | none
+20 | watchpoint | 08006068 | ABFFFFF5 | 00000000 | FFAFFEBF | 00000000 | none
+21 | watchpoint | 080060B0 | ABFFFFF5 | 00000000 | FFAFFEBF | 00000000 | none
+22 | watchpoint | 08005FEC | ABFFFFF5 | 00000000 | FFAFFEBF | 00000000 | none
+23 | watchpoint | 0800601A | ABFFFFF5 | 00000000 | FFAFFEBF | 00000000 | none
+24 | watchpoint | 08006042 | ABFFFFF5 | 00000000 | FFAFFEBF | 00000000 | none
+25 | watchpoint | 08006068 | ABFFFFD5 | 00000000 | FFAFFEBF | 00000000 | none
+26 | watchpoint | 080060B0 | ABFFFFD5 | 00000000 | FFAFFEBF | 00000000 | none
+27 | watchpoint | 08005FEC | ABFFFFD5 | 00000000 | FFAFFEBF | 00000000 | none
+28 | watchpoint | 0800601A | ABFFFFD5 | 00000000 | FFAFFEBF | 00000000 | none
+29 | watchpoint | 08006042 | ABFFFFD5 | 00000000 | FFAFFEBF | 00000000 | none
+30 | watchpoint | 08006068 | ABFFFFD5 | 00000000 | FFAFFEBD | 00000000 | none
+31 | no write within 300 ms (halted by debugger) | 080063F0 | ABFFFFD5 | 00000000 | FFAFFEBD | 00000000 | none
+32 | no write within 300 ms (halted by debugger) | 080063F0 | ABFFFFD5 | 00000000 | FFAFFEBD | 00000000 | none
+33 | no write within 300 ms (halted by debugger) | 080063F0 | ABFFFFD5 | 00000000 | FFAFFEBD | 00000000 | none
+34 | no write within 300 ms (halted by debugger) | 080063F0 | ABFFFFD5 | 00000000 | FFAFFEBD | 00000000 | none
+35 | no write within 300 ms (halted by debugger) | 080063F0 | ABFFFFD5 | 00000000 | FFAFFEBD | 00000000 | none
+36 | no write within 300 ms (halted by debugger) | 080063F0 | ABFFFFD5 | 00000000 | FFAFFEBD | 00000000 | none
+37 | no write within 300 ms (halted by debugger) | 080063F0 | ABFFFFD5 | 00000000 | FFAFFEBD | 00000000 | none
+38 | no write within 300 ms (halted by debugger) | 080063F0 | ABFFFFD5 | 00000000 | FFAFFEBD | 00000000 | none
+39 | no write within 300 ms (halted by debugger) | 080063F0 | ABFFFFD5 | 00000000 | FFAFFEBD | 00000000 | none
+40 | no write within 300 ms (halted by debugger) | 080063F0 | ABFFFFD5 | 00000000 | FFAFFEBD | 00000000 | none
+41 | no write within 300 ms (halted by debugger) | 080063F0 | ABFFFFD5 | 00000000 | FFAFFEBD | 00000000 | none
+42 | no write within 300 ms (halted by debugger) | 080063F0 | ABFFFFD5 | 00000000 | FFAFFEBD | 00000000 | none
+43 | no write within 300 ms (halted by debugger) | 080063F0 | ABFFFFD5 | 00000000 | FFAFFEBD | 00000000 | none
+44 | no write within 300 ms (halted by debugger) | 080063F0 | ABFFFFD5 | 00000000 | FFAFFEBD | 00000000 | none
+45 | no write within 300 ms (halted by debugger) | 080063F0 | ABFFFFD5 | 00000000 | FFAFFEBD | 00000000 | none
+46 | no write within 300 ms (halted by debugger) | 080063F0 | ABFFFFD5 | 00000000 | FFAFFEBD | 00000000 | none
+47 | no write within 300 ms (halted by debugger) | 080063F0 | ABFFFFD5 | 00000000 | FFAFFEBD | 00000000 | none
+48 | no write within 300 ms (halted by debugger) | 080063F0 | ABFFFFD5 | 00000000 | FFAFFEBD | 00000000 | none
+49 | no write within 300 ms (halted by debugger) | 080063F0 | ABFFFFD5 | 00000000 | FFAFFEBD | 00000000 | none
+50 | no write within 300 ms (halted by debugger) | 080063F0 | ABFFFFD5 | 00000000 | FFAFFEBD | 00000000 | none
+51 | no write within 300 ms (halted by debugger) | 080063F0 | ABFFFFD5 | 00000000 | FFAFFEBD | 00000000 | none
+52 | no write within 300 ms (halted by debugger) | 080063F0 | ABFFFFD5 | 00000000 | FFAFFEBD | 00000000 | none
+53 | no write within 300 ms (halted by debugger) | 080063F0 | ABFFFFD5 | 00000000 | FFAFFEBD | 00000000 | none
+54 | no write within 300 ms (halted by debugger) | 080063F0 | ABFFFFD5 | 00000000 | FFAFFEBD | 00000000 | none
+55 | no write within 300 ms (halted by debugger) | 080063F0 | ABFFFFD5 | 00000000 | FFAFFEBD | 00000000 | none
+56 | no write within 300 ms (halted by debugger) | 080063F0 | ABFFFFD5 | 00000000 | FFAFFEBD | 00000000 | none
+57 | no write within 300 ms (halted by debugger) | 080063F0 | ABFFFFD5 | 00000000 | FFAFFEBD | 00000000 | none
+58 | no write within 300 ms (halted by debugger) | 080063F0 | ABFFFFD5 | 00000000 | FFAFFEBD | 00000000 | none
+59 | no write within 300 ms (halted by debugger) | 080063F0 | ABFFFFD5 | 00000000 | FFAFFEBD | 00000000 | none
+60 | no write within 300 ms (halted by debugger) | 080063F0 | ABFFFFD5 | 00000000 | FFAFFEBD | 00000000 | none
+61 | no write within 300 ms (halted by debugger) | 080063F0 | ABFFFFD5 | 00000000 | FFAFFEBD | 00000000 | none
+62 | no write within 300 ms (halted by debugger) | 080063F0 | ABFFFFD5 | 00000000 | FFAFFEBD | 00000000 | none
+63 | no write within 300 ms (halted by debugger) | 080063F0 | ABFFFFD5 | 00000000 | FFAFFEBD | 00000000 | none
+64 | no write within 300 ms (halted by debugger) | 080063F0 | ABFFFFD5 | 00000000 | FFAFFEBD | 00000000 | none
+65 | no write within 300 ms (halted by debugger) | 080063F0 | ABFFFFD5 | 00000000 | FFAFFEBD | 00000000 | none
+66 | no write within 300 ms (halted by debugger) | 080063F0 | ABFFFFD5 | 00000000 | FFAFFEBD | 00000000 | none
+67 | no write within 300 ms (halted by debugger) | 080063F0 | ABFFFFD5 | 00000000 | FFAFFEBD | 00000000 | none
+68 | no write within 300 ms (halted by debugger) | 080063F0 | ABFFFFD5 | 00000000 | FFAFFEBD | 00000000 | none
+69 | no write within 300 ms (halted by debugger) | 080063F0 | ABFFFFD5 | 00000000 | FFAFFEBD | 00000000 | none
+70 | no write within 300 ms (halted by debugger) | 080063F0 | ABFFFFD5 | 00000000 | FFAFFEBD | 00000000 | none
+71 | no write within 300 ms (halted by debugger) | 080063F0 | ABFFFFD5 | 00000000 | FFAFFEBD | 00000000 | none
+72 | no write within 300 ms (halted by debugger) | 080063F0 | ABFFFFD5 | 00000000 | FFAFFEBD | 00000000 | none
+73 | no write within 300 ms (halted by debugger) | 080063F0 | ABFFFFD5 | 00000000 | FFAFFEBD | 00000000 | none
+74 | no write within 300 ms (halted by debugger) | 080063F0 | ABFFFFD5 | 00000000 | FFAFFEBD | 00000000 | none
+75 | no write within 300 ms (halted by debugger) | 080063F0 | ABFFFFD5 | 00000000 | FFAFFEBD | 00000000 | none
+76 | no write within 300 ms (halted by debugger) | 080063F0 | ABFFFFD5 | 00000000 | FFAFFEBD | 00000000 | none
+77 | no write within 300 ms (halted by debugger) | 080063F0 | ABFFFFD5 | 00000000 | FFAFFEBD | 00000000 | none
+78 | no write within 300 ms (halted by debugger) | 080063F0 | ABFFFFD5 | 00000000 | FFAFFEBD | 00000000 | none
+79 | no write within 300 ms (halted by debugger) | 080063F0 | ABFFFFD5 | 00000000 | FFAFFEBD | 00000000 | none
+80 | no write within 300 ms (halted by debugger) | 080063F0 | ABFFFFD5 | 00000000 | FFAFFEBD | 00000000 | none
+81 | final resume (not a loop iteration) | ? | 00000000 | 00000000 | 00000000 | 00000000 | none
