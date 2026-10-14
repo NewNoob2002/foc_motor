@@ -3,6 +3,7 @@
 ## 当前阶段
 
 - 当前处于 M1 收尾：允许 Zephyr 工程骨架、CI、无母线安全启动和诊断验证。进入 M2 外设实现前需确认阶段门；再次明确确认进入 M3 前，不实现或接入 Clarke、Park、PI、SVPWM 或闭环 FOC 算法。
+- 2026-10-12 用户授权提前开展 M3 host-only 学习：允许在 `lib/foc` 实现纯 C FOC 数学，并以 host 测试和 `tests/host/foc/sim_current_loop.c` 仿真验证，说明见 `docs/foc_study_guide.md`。仍不得接入 Zephyr 固件、ISR 或功率输出；M2 阶段门和 M3 的 ARM/WCET 关闭条件不变。
 - 硬件事实和证据编号见 `docs/hardware_reference.md`，架构基线见 `docs/zephyr_architecture.md`，阶段门见 `docs/development_roadmap.md`，M1 构建证据见 `docs/m1_build_evidence.md`，未关闭风险见 `docs/risk_list.md`。
 
 ## Zephyr 与实时性
