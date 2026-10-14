@@ -1,6 +1,6 @@
 # Stage 1 — Boot-safety check with the J-Link
 
-Status: **partly done** (2026-10-14). The J-Link checks below pass. Open: the multimeter reset check and the power-source confirmation (see "Open items"). R-18 stays open by design; its waveform capture is a stage 7 entry condition.
+Status: **done** (2026-10-14). All "done when" criteria pass. R-18 stays open by design; its waveform capture is a stage 7 entry condition.
 
 ## Setup
 
@@ -11,9 +11,9 @@ Status: **partly done** (2026-10-14). The J-Link checks below pass. Open: the mu
 | Firmware on the board | Not reflashed. Flash `0x0800_0000`, 36,916 B, SHA-256 `d1551241a7bdd8b7d8a010738ed7e2bda9405782d589e8a92c54d285cf143db3` = the UART3 `zephyr.bin` recorded in [uart3_validation.md](../uart3_validation.md) |
 | Debug probe | SEGGER J-Link, S/N 63728769, hardware V9.70, firmware compiled 2021-05-07; SWD at 1 MHz |
 | Tools | J-Link Commander and DLL V9.84 |
-| Power | Reported by the user: board powered from the J-Link 3.3 V supply. VTref measured 3.374 V. DCBUS: to be confirmed (open item) |
+| Power | Reported by the user: the board's 3.3 V rail is fed only from the J-Link VTref pin, measured 3.374 V; DCBUS and USB not connected, so the gate drivers had no supply. On a genuine SEGGER J-Link, VTref is a sense input; this probe supplies 3.3 V on it |
 | Wiring | J-Link SWD to the board's SWD header. No NRST line on the header |
-| Instruments | None besides the J-Link (no scope or logic analyzer) |
+| Instruments | J-Link and a multimeter (no scope or logic analyzer) |
 
 ## What was run
 
@@ -23,6 +23,7 @@ All scripts and raw logs are in [`stage1/`](./stage1/); `parse_run.py` turns a l
 2. **Run A, software reset** (`runA.jlink`): J-Link "Normal" reset, which sets `DEMCR.VC_CORERESET` and writes `AIRCR.SYSRESETREQ`; register snapshot at the first instruction; one data watchpoint on **every CPU write to `0x4800_0000`–`0x4800_07FF`** (all GPIOA and GPIOB registers, address mask `0x7FF`); then 80 × (go, wait 300 ms, record the stop reason, PC, GPIOA/B `MODER` and `ODR`).
 3. **Run C, button reset** (`runC_button.jlink`): the same watchpoint plus vector catch; the user pressed the reset button (SW1); then 60 loop iterations.
 4. **Final state** (`final_state.jlink`): read-only check after the runs.
+5. **Multimeter** (by the user): reset button held, SD1–SD4 (PB0, PA1, PA2, PA0) measured to GND.
 
 ## Results
 
@@ -52,7 +53,7 @@ Running state (read-only pass and final state):
 | Every recorded write keeps SD1–SD4 low | **Pass** (both resets) |
 | At run time the SD pins are outputs driving low and `IDR` reads low | **Pass** |
 | TIM1 stopped with main output off | **Pass** (not even clocked) |
-| Multimeter about 0 V on SD1–SD4 during reset | **Open** |
+| Multimeter about 0 V on SD1–SD4 during reset | **Pass**: all four read 0 V (user measurement; the meter model and range were not recorded) |
 | Lab note written | This file |
 
 ## Limits
@@ -69,8 +70,7 @@ Running state (read-only pass and final state):
 
 ## Open items
 
-1. Multimeter: hold the reset button, measure SD1–SD4 (PB0, PA1, PA2, PA0) to GND; expect about 0 V.
-2. Confirm the power source (which J-Link pin feeds the board) and that DCBUS was disconnected.
+- None for stage 1. R-18 (waveform capture with a logic analyzer or scope) remains an entry condition for stage 7.
 
 ## Raw evidence (SHA-256)
 
