@@ -3,12 +3,12 @@
 ## 当前阶段
 
 - 2026-10-14 用户采用初学者路线图 `docs/plan/beginner_roadmap.md` 作为当前执行路径：Stage 0–7，每个 Stage 学一项技能并以可展示的结果结束。`docs/plan/development_roadmap.md` 保留为长期产品阶段门（M0–M6），Stage 与 M 节点的对应见初学者路线图第 5 节。
-- 当前处于 **Stage 1**（台架准备与安全引脚检查）；Stage 0（工具链、safe-boot 固件、CI、host FOC 学习）已完成。进入下一个 Stage 前需用户明确确认，并在本节记录日期。
+- 当前处于 **Stage 1**（台架准备与启动安全检查：J-Link 寄存器/观察点检查和万用表复位静态检查）；Stage 0（工具链、safe-boot 固件、CI、host FOC 学习）已完成。进入下一个 Stage 前需用户明确确认，并在本节记录日期。
 - 各 Stage 的允许范围：
-  - Stage 1–4：仅 USB 供电，不接 DCBUS，SD1–SD4 保持低。允许在 BSP 中实现 TIM3 编码器、ADC2 读数、TIM1 PWM 与 ADC 触发，只在 MCU 引脚上观测。
+  - Stage 1–4：仅 USB 供电，不接 DCBUS，SD1–SD4 保持低。Stage 1 只用 J-Link 对板上现有固件做暂停、单步、观察点、读寄存器和复位，不烧录。允许在 BSP 中实现 TIM3 编码器、ADC2 读数、TIM1 PWM 与 ADC 触发，只在 MCU 引脚上观测。
   - Stage 5：允许把 `lib/foc` 编入测试固件（不接 ISR、不使能 PWM），做数值对比和 DWT 计时。
   - Stage 6：允许 FOC ISR 在不接 DCBUS、SD1–SD4 保持低的条件下运行。
-  - Stage 7（首次带电）：尚未获准。进入前须满足“安全默认值”，并由用户对 R-02 作出决定（先增加独立于 CPU 的硬件关断，或仅针对低压限流学习台架正式接受风险），记录在本文件和 `docs/plan/risk_list.md`。
+  - Stage 7（首次带电）：尚未获准。进入前须满足“安全默认值”，用逻辑分析仪或示波器记录 R-18 的真实引脚波形，并由用户对 R-02 作出决定（先增加独立于 CPU 的硬件关断，或仅针对低压限流学习台架正式接受风险），记录在本文件和 `docs/plan/risk_list.md`。
 - host FOC 学习继续：`lib/foc` 的纯 C 数学先以 host 测试和 `tests/host/foc/sim/` 仿真验证，说明见 `docs/study/foc_study_guide.md`。
 - 硬件事实和证据编号见 `docs/hardware/hardware_reference.md`，架构基线见 `docs/design/zephyr_architecture.md`，路线图见 `docs/plan/beginner_roadmap.md`（当前执行）和 `docs/plan/development_roadmap.md`（长期阶段门），M1 构建证据见 `docs/evidence/m1_build_evidence.md`，未关闭风险见 `docs/plan/risk_list.md`。
 

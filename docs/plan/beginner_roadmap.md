@@ -31,18 +31,26 @@ Read from the main schematic (`DOC-MAIN-SCH`) and [hardware_reference.md](../har
 
 ## 3. Stages
 
-Each stage: **learn** (the concept), **do** (the code or setup), **done when** (what you can show). Keep one branch per stage (`bsp/encoder`, `bsp/adc`, …) and one short lab note per stage (section 6).
+Each stage: **learn** (the concept), **do** (the code or setup), **done when** (what you can show). One short lab note per stage (section 6) and one branch per stage, named `stage/N-name` (for example `stage/1-boot-check`, `stage/2-encoder`). All of a stage's work goes on its branch: code, scripts, roadmap and rule wording, the lab note and evidence. Commit and push often; each push runs CI. Merge into `master` once, when the stage's "done when" is met, so `master` only gains finished stages. If `master` changes meanwhile, merge it into the stage branch before finishing.
 
 ### Stage 0 — Toolchain and FOC math on the PC (done)
 
 - Zephyr v4.4.2 build, safe-boot firmware, UART3 console, CI (host + ARM) — done, CI run 38546477578.
 - Clarke/Park, PI, SVPWM, current and speed loops in simulation — done (study guide exercises 1–3).
 
-### Stage 1 — Bench setup and the safe-pin check
+### Stage 1 — Bench setup and the boot-safety check with the J-Link
 
-- **Learn:** using a scope or logic analyzer; what "safe at reset" means.
-- **Do:** USB power only, no DCBUS. Probe SD1–SD4 and PC0–PC3 while powering up, pressing reset, and booting Zephyr.
-- **Done when:** a capture shows SD1–SD4 low and PC0–PC3 not toggling through all three events (closes R-18). Write the bench record: supplies, current limits, how you cut power.
+- **Learn:** the debugger (halt, step, data watchpoints), GPIO and TIM1 registers, what "safe at reset" means, and why a register snapshot is not a waveform.
+- **Do:** USB power only, no DCBUS, no flashing: debug the firmware already on the board.
+  1. Bench record: power source and current limit, how you cut power, J-Link serial number, board UID read back over SWD (M1 recorded `001D0050 42535013 20363130`).
+  2. Multimeter: hold the reset button and measure SD1–SD4 to ground. While reset is held the MCU pins are high-impedance, so this checks the EG2104 internal pull-downs.
+  3. Halt at the first instruction after reset. Read `MODER`, `ODR` and `IDR` for SD1 (PB0), SD2 (PA1), SD3 (PA2), SD4 (PA0) and PC0–PC3, plus TIM1 `CR1` and `BDTR`.
+  4. Set data watchpoints on CPU writes to the GPIOA and GPIOB output registers (`BSRR`, `ODR`), the two ports that carry SD1–SD4. Run to `main()` and record every write and its value.
+  5. Repeat steps 3–4 after a pin reset (button) and after a software reset (SYSRESETREQ).
+- **Done when:** every recorded write keeps SD1–SD4 low; at `main()` the SD pins are outputs driving low and `IDR` reads low; TIM1 is stopped (`CR1.CEN = 0`) with its main output off (`BDTR.MOE = 0`); the multimeter reads about 0 V on SD1–SD4 during reset; the lab note is written.
+- **Limits:** this checks the CPU's own writes and static levels only. It cannot see microsecond glitches, DMA writes or the power-up ramp, so **R-18 stays open** and becomes an entry condition for stage 7 (a logic-analyzer or scope capture). That is acceptable before stage 7 because the gate drivers have no supply without DCBUS (section 2).
+
+Register addresses (RM0440, check against the reference manual): GPIOA `0x4800_0000`, GPIOB `0x4800_0400`, GPIOC `0x4800_0800`, offsets `MODER 0x00`, `IDR 0x10`, `ODR 0x14`, `BSRR 0x18`; TIM1 `0x4001_2C00`, offsets `CR1 0x00`, `BDTR 0x44`. The Cortex-M4 has 4 DWT comparators, enough for the 4 watched registers.
 
 ### Stage 2 — Read the encoder by hand
 
@@ -74,7 +82,7 @@ Each stage: **learn** (the concept), **do** (the code or setup), **done when** (
 - **Do:** combine stages 2–5. The ADC interrupt reads IA/IC (about 0 A) and TIM3, runs the full current-loop code path, and writes CCR1–3. No current can flow, so the PIs sit at their limits; that is expected. To see something meaningful, also run a mode that sends a fixed small voltage vector (`vd` only) through inverse Park at `theta_e` and SVPWM. SD1–SD4 stay low; look at PC0–PC2 on the scope and turn the shaft by hand.
 - **Done when:** the duty pattern rotates as you turn the shaft (7 electrical turns per mechanical turn); DWT shows WCET under 20 µs and zero overruns over several minutes; a forced overrun is detected.
 
-### Stage 7 — First power (needs the decisions in section 4)
+### Stage 7 — First power (needs the decisions in section 4 and the R-18 capture)
 
 - **Learn:** motor parameters, alignment, closing the loops on real hardware.
 - **Do, in order, stopping at the first surprise:**
@@ -92,7 +100,7 @@ Each stage: **learn** (the concept), **do** (the code or setup), **done when** (
 |---|---|
 | R-02 (no CPU-independent shutdown) | (a) keep the rule: add a hardware shutdown (comparator pulling SD1–SD3 low) first; (b) accept for a **learning bench only**, limited to a low current-limited supply, and record that acceptance in `AGENTS.md` and `risk_list.md`. A current limit reduces damage but does not replace a shutdown path |
 | Bus voltage and supply | Bench supply with an adjustable current limit; minimum voltage set by the XL7005A |
-| Instruments | Scope and/or logic analyzer (stages 1, 4, 6); milliohm/LCR meter (stage 7) |
+| Instruments | Stage 1 runs with the J-Link and a multimeter. A logic analyzer (an 8-channel, 24 MHz USB one is enough) or scope is needed from stage 4, and for the R-18 capture before stage 7. Milliohm/LCR meter for stage 7 |
 | Evidence level | Lab notes (section 6) instead of the full M-gate records; they must still carry the fields `AGENTS.md` requires for hardware tests |
 
 ## 5. Adoption (2026-10-14)
@@ -101,7 +109,7 @@ What adopting this plan changed:
 
 - `AGENTS.md` "当前阶段": the current position is a stage number (now stage 1); moving to the next stage needs your explicit confirmation, recorded there with the date. Each stage's allowed scope is listed there: stages 1–4 USB power only with SD1–SD4 low, `lib/foc` in a test firmware from stage 5, the FOC ISR from stage 6, and stage 7 not allowed until the R-02 decision is recorded.
 - `AGENTS.md` "安全默认值": one explicit exception, PWM on the MCU pins in stages 4–6 while DCBUS is disconnected and SD1–SD4 are low.
-- `development_roadmap.md` stays as the long-term product plan. Mapping: stage 1 = M1-08/M1-09, stages 2–4 = M2, stage 5 = M3 ARM/WCET, stage 6 = M2/M3 ISR, stage 7 = M4.
+- `development_roadmap.md` stays as the long-term product plan. Mapping: stage 1 = M1-09 and the software-path part of M1-08 (the M1-08 waveform, R-18, moves to the stage 7 entry), stages 2–4 = M2, stage 5 = M3 ARM/WCET, stage 6 = M2/M3 ISR, stage 7 = M4.
 - Unchanged: the hardware-test rules in `AGENTS.md` (board identity, supply, e-stop, recovery, evidence) and the R-02 rule for powered closed loop.
 
 ## 6. Lab note template
