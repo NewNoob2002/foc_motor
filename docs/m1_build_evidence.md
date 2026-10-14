@@ -6,10 +6,10 @@
 
 | 组件 | 固定版本/提交 |
 |---|---|
-| Zephyr | `4.4.99/main` / `8dafb9a897da0f79a1a3724a108b21fc28719915` |
+| Zephyr | `v4.4.2` / `dccb09599635bdff17633fa7e9dab014b91dce90` |
 | CMSIS | `512cc7e895e8491696b61f7ba8066b4a182569b8` |
-| CMSIS_6 | `b2dfbe1a20bbd49c2d2c605073799671074bbb30` |
-| STM32 HAL | `33576ef05e529cad803f210cc95b52b607757c96` |
+| CMSIS_6 | `30a859f44ef8ab4dc8f84b03ed586fd16ccf9d74` |
+| STM32 HAL | `fc11896dd39cfca37bf9b4aeaaa2df8861b81875` |
 | west | 1.5.0 |
 | Zephyr SDK | 1.0.1 |
 | ARM GCC | 14.3.0 |
@@ -23,10 +23,10 @@
 |---|---|---|
 | Host C11 configure/build | PASS | GCC 13.3，`-Wall -Wextra -Werror`，ASan/UBSan |
 | Host CTest | PASS | `1/1` tests passed |
-| ARM pristine build | PASS | board `foc_motor/stm32g431xx`，Zephyr build `v4.4.0-12700-g8dafb9a897da`，零编译 warning |
+| ARM pristine build | PASS | board `foc_motor/stm32g431xx`，Zephyr build `v4.4.2`，零编译 warning |
 | 输出产物 | PASS | ELF、HEX、BIN、map、`.config`、generated DTS 均非空 |
-| Flash 预算 | PASS | Zephyr 报告 36,912 B；门限 98,304 B；物理 131,072 B |
-| RAM 预算 | PASS | Zephyr 报告 6,656 B；门限 24,576 B；物理 32,768 B |
+| Flash 预算 | PASS | Zephyr 报告 36,560 B；门限 98,304 B；物理 131,072 B |
+| RAM 预算 | PASS | Zephyr 报告 6,528 B；门限 24,576 B；物理 32,768 B |
 | 动态内存入口 | PASS | ELF 不含 `malloc/calloc/realloc/free/k_malloc/k_calloc/k_heap_alloc`；`CONFIG_HEAP_MEM_POOL_SIZE=0` |
 | 安全 devicetree | PASS | generated DTS 有且只有 4 个 `output-low` GPIO hog；TIM1/PWM disabled |
 | UART DMA devicetree | PASS | USART1=921600；DMA selector 2（DMA1 Channel 3）；DMAMUX request 25；USART1/DMA IRQ priority 5 |
@@ -61,7 +61,7 @@ cd /home/gtc/zephyrproject
 west build -p always -b foc_motor \
   -d /home/gtc/Desktop/workspace/STM32_PROJ/foc_motor/build/arm \
   /home/gtc/Desktop/workspace/STM32_PROJ/foc_motor -- \
-  -DBUILD_VERSION=v4.4.0-12700-g8dafb9a897da
+  -DBUILD_VERSION=v4.4.2
 ```
 
 ## 3. 2026-08-22 历史产物

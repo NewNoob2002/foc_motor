@@ -6,7 +6,7 @@
 
 平台目标是 STM32G431RBT6 上的三相 FOC 电机控制器，Zephyr 负责设备管理、控制线程和诊断；硬实时电流环由定时器触发的 ADC/DMA ISR 执行。CANopen 保留为未来目标，当前延期。现有第四桥臂不参与三相 FOC，始终通过 SD4 保持关闭。
 
-按用户确认，M1 直接使用本机 `/home/gtc/zephyrproject`：Zephyr `4.4.99/main`（`v4.4.0-12700-g8dafb9a897d`，commit `8dafb9a897da0f79a1a3724a108b21fc28719915`）和 Zephyr SDK 1.0.1。该 checkout 不是 stable release；升级环境必须显式更新本文并重新生成构建与硬件证据。
+按用户确认，基线统一为 Zephyr 正式 release `v4.4.2`（tag `v4.4.2` / commit `dccb09599635bdff17633fa7e9dab014b91dce90`）和 Zephyr SDK 1.0.1。项目明确只使用官方稳定 release 版本，不跟随开发主线；环境升级必须显式更新本文并重新生成构建与硬件证据。
 
 初始控制参数是可校准基线，不是最终电机参数：
 
@@ -181,7 +181,7 @@ M1 控制台固定为排针 H2 USART3（PB10 TX/PB11 RX）921600 8N1，板载 Ty
 
 ### 7.2 ARM build：Zephyr firmware
 
-- 本地构建使用 `/home/gtc/zephyrproject` 的 Zephyr commit `8dafb9a897da0f79a1a3724a108b21fc28719915` 和 Zephyr SDK 1.0.1；CI 对同一提交做基线检查。
+- 本地构建使用 `/home/gtc/zephyrproject` 的 Zephyr tag `v4.4.2`（commit `dccb09599635bdff17633fa7e9dab014b91dce90`）和 Zephyr SDK 1.0.1；CI 对同一提交做基线检查。
 - 自定义 board/devicetree 描述 STM32G431RBT6、时钟、引脚、Flash/RAM 和安全默认状态。
 - 命令契约：`west build -p always -b <foc_motor_board> app`。
 - 合并门：ARM 编译零告警、devicetree/Kconfig 通过、ELF/BIN/map 产出、Flash/RAM 和每个线程栈低于预算。

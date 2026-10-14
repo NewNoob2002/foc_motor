@@ -79,7 +79,7 @@
 
 工作：
 
-- 使用锁定 Zephyr `4.4.99/main` 提交 `8dafb9a897da0f79a1a3724a108b21fc28719915` 和 Zephyr SDK 1.0.1；当前通过隔离 workspace 构建，具体命令见 UART3 验证记录。不得把 `/home/gtc/zephyrproject` 的已漂移 checkout 当成该提交；环境升级必须显式更新基线和构建证据。
+- 使用锁定 Zephyr 正式 release `v4.4.2`（tag `v4.4.2` / commit `dccb09599635bdff17633fa7e9dab014b91dce90`）和 Zephyr SDK 1.0.1；本地构建使用 `/home/gtc/zephyrproject`。后续仅允许使用最新正式 release 版本，不使用开发主线；环境升级必须显式更新基线和构建证据。
 - 创建 STM32G431RBT6 自定义 board、devicetree、Kconfig 和最小 application。
 - 建立 host CMake/CTest 空壳与 ARM `west build` workflow。
 - 生成 ELF/BIN/map，建立 Flash/RAM/线程栈预算。

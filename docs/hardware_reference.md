@@ -131,7 +131,7 @@ CPU 可以同时通过 TIM1 break 接收和记录故障，但不能是首次关�
 | 项目 | 实测值 | 结论 |
 |---|---|---|
 | 工作区 | `/home/gtc/zephyrproject` | west topdir 可识别 |
-| 当前 Zephyr checkout | `VERSION=4.4.99`，`v4.4.0-12700-g8dafb9a897d`，commit `8dafb9a897da0f79a1a3724a108b21fc28719915`，branch `main` | 用户指定为当前 M1 基线；不是 stable release，升级前需显式确认 |
+| 当前 Zephyr checkout | `VERSION=4.4.2`，tag `v4.4.2`，commit `dccb09599635bdff17633fa7e9dab014b91dce90`，branch `v4.4-branch` | 用户指定基线；项目锁定官方正式 release 版本，不使用开发主线 |
 | west | 1.5.0，位于 `/home/gtc/zephyrproject/.venv` | 当前项目 shell 未自动激活该 venv |
 | Zephyr SDK | 1.0.1 | 已安装于 `/home/gtc/zephyr-sdk-1.0.1` |
 | ARM compiler | GCC 14.3.0 | `arm-zephyr-eabi-gcc (Zephyr SDK 1.0.1)` |

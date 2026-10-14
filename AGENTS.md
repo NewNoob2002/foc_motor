@@ -35,7 +35,7 @@
 ## 构建与测试
 
 - Host 构建必须在没有 Zephyr 环境的普通 CMake/CTest 环境中编译 FOC 数学模块，并以 warnings-as-errors 和 ASan/UBSan 运行。
-- ARM 构建使用本机 `/home/gtc/zephyrproject` 当前基线：Zephyr `4.4.99/main`（commit `8dafb9a897da0f79a1a3724a108b21fc28719915`）、Zephyr SDK 1.0.1 和 `west build`。升级该 checkout 前必须先更新并重新生成 M1 证据；CI 只构建/测试，不自动烧录。
+- ARM 构建使用本机 `/home/gtc/zephyrproject` 当前基线：Zephyr `v4.4.2`（tag `v4.4.2` / commit `dccb09599635bdff17633fa7e9dab014b91dce90`）、Zephyr SDK 1.0.1 和 `west build`。升级该 checkout 前必须先更新并重新生成 M1 证据；CI 只构建/测试，不自动烧录。
 - Clarke、Park、PI、SVPWM 的每个行为变更必须先有 host 测试；PWM、ADC、DMA、编码器的行为必须由目标板/HIL 证据确认。
 - Hardware 测试必须记录板卡序列号、固件提交、工具版本、接线、供电限制、原始日志和示波器/逻辑分析仪证据。
 - Host 测试不能替代 ARM 构建，ARM 构建不能替代 HIL。没有硬件证据时不得声称硬件已验证。
