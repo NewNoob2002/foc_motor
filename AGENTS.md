@@ -2,9 +2,15 @@
 
 ## 当前阶段
 
-- 当前处于 M1 收尾：允许 Zephyr 工程骨架、CI、无母线安全启动和诊断验证。进入 M2 外设实现前需确认阶段门；再次明确确认进入 M3 前，不实现或接入 Clarke、Park、PI、SVPWM 或闭环 FOC 算法。
-- 2026-10-12 用户授权提前开展 M3 host-only 学习：允许在 `lib/foc` 实现纯 C FOC 数学，并以 host 测试和 `tests/host/foc/sim/sim_current_loop.c` 仿真验证，说明见 `docs/study/foc_study_guide.md`。仍不得接入 Zephyr 固件、ISR 或功率输出；M2 阶段门和 M3 的 ARM/WCET 关闭条件不变。
-- 硬件事实和证据编号见 `docs/hardware/hardware_reference.md`，架构基线见 `docs/design/zephyr_architecture.md`，阶段门见 `docs/plan/development_roadmap.md`，M1 构建证据见 `docs/evidence/m1_build_evidence.md`，未关闭风险见 `docs/plan/risk_list.md`。
+- 2026-10-14 用户采用初学者路线图 `docs/plan/beginner_roadmap.md` 作为当前执行路径：Stage 0–7，每个 Stage 学一项技能并以可展示的结果结束。`docs/plan/development_roadmap.md` 保留为长期产品阶段门（M0–M6），Stage 与 M 节点的对应见初学者路线图第 5 节。
+- 当前处于 **Stage 1**（台架准备与安全引脚检查）；Stage 0（工具链、safe-boot 固件、CI、host FOC 学习）已完成。进入下一个 Stage 前需用户明确确认，并在本节记录日期。
+- 各 Stage 的允许范围：
+  - Stage 1–4：仅 USB 供电，不接 DCBUS，SD1–SD4 保持低。允许在 BSP 中实现 TIM3 编码器、ADC2 读数、TIM1 PWM 与 ADC 触发，只在 MCU 引脚上观测。
+  - Stage 5：允许把 `lib/foc` 编入测试固件（不接 ISR、不使能 PWM），做数值对比和 DWT 计时。
+  - Stage 6：允许 FOC ISR 在不接 DCBUS、SD1–SD4 保持低的条件下运行。
+  - Stage 7（首次带电）：尚未获准。进入前须满足“安全默认值”，并由用户对 R-02 作出决定（先增加独立于 CPU 的硬件关断，或仅针对低压限流学习台架正式接受风险），记录在本文件和 `docs/plan/risk_list.md`。
+- host FOC 学习继续：`lib/foc` 的纯 C 数学先以 host 测试和 `tests/host/foc/sim/` 仿真验证，说明见 `docs/study/foc_study_guide.md`。
+- 硬件事实和证据编号见 `docs/hardware/hardware_reference.md`，架构基线见 `docs/design/zephyr_architecture.md`，路线图见 `docs/plan/beginner_roadmap.md`（当前执行）和 `docs/plan/development_roadmap.md`（长期阶段门），M1 构建证据见 `docs/evidence/m1_build_evidence.md`，未关闭风险见 `docs/plan/risk_list.md`。
 
 ## Zephyr 与实时性
 
@@ -27,7 +33,7 @@
 ## 安全默认值
 
 - 复位后立即保持 SD1/SD2/SD3/SD4 为低；D 相在本项目中始终禁用。
-- PWM 只能在 ADC 校准、编码器检查、故障检查和控制状态机全部通过后使能。
+- PWM 只能在 ADC 校准、编码器检查、故障检查和控制状态机全部通过后使能。例外：Stage 4–6 在不接 DCBUS 且 SD1–SD4 保持低时，允许 TIM1 在 MCU 引脚上输出 PWM 以供观测；SD 拉高或接入 DCBUS 时不适用。
 - 软件故障处理不是功率级保护。带电闭环测试前必须具备独立于 CPU 的硬件关断路径，并验证其关断时间。
 - 看门狗只能由健康监督逻辑喂狗；不得在 FOC ISR 或无条件周期任务中喂狗。
 - 不得在没有限流电源、急停、目标板身份确认和恢复方案时执行功率测试或烧录。
