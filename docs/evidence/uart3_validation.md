@@ -5,6 +5,7 @@
 ## 原理图与配置
 
 - 已逐图核对 `Schematic_浩盛单路电机开发板V2.0.pdf` 的 U3、H2、U26。H2/6 = PB10/USART3_TX，H2/5 = PB11/USART3_RX，H2/1 = DGND。转接器 RXD 接 H2/6、TXD 接 H2/5；用户确认使用 3.3 V TTL，DCBUS 断开，仅逻辑供电。供电限流数值未提供，不宣称已测量。
+  - 2026-10-14 更正：上述“H2/1 = DGND”与原理图不符。H2-1 接 +3.3V（本板实测对地 +3.34 V），DGND 在 H2-4，见 `HW-UART-003`。本条保留原记录；当时转接器 GND 的实际接点未再核实。
 - console、shell-uart 均选 USART3，PB10/PB11 AF7，921600 8N1，无流控；USART1 从 SoC 继承 disabled。`CONFIG_SHELL` 仍未启用，本次验证目标为 console/日志输出，不是交互命令行。
 - 保留 deferred logging、UART async TX 和 DMA1 Channel 3（selector 2），改为 USART3 IRQ 39、DMAMUX request 29，普通 IRQ 优先级 5。编译期断言覆盖 chosen、USART1 禁用、波特率、DMA、安全 GPIO 和 TIM1 禁用。
 
