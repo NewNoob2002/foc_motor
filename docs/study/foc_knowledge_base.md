@@ -173,6 +173,8 @@ Rotating the frame creates the `j*we` term: it holds both the cross-coupling (`+
 
 ## 9. Path to the board
 
+The current execution path is the [beginner roadmap](../plan/beginner_roadmap.md) (stages 0–7). The table below is the long-term gate view from the development roadmap.
+
 Hardware tests need explicit authorization, a current-limited supply, an emergency stop, confirmed board identity and a recovery plan. Host results never count as hardware verification.
 
 | Gate | Status today | What closes it |

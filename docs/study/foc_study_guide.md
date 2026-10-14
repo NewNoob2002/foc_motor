@@ -1,6 +1,6 @@
 # FOC Study Guide (host-only, no hardware)
 
-Status: 2026-10-12. The user authorized host-only M3 study work. Everything here runs on the PC. Nothing is wired into the Zephyr firmware, any ISR or the power stage; M2 and the hardware gates in `AGENTS.md` are unchanged.
+Status: 2026-10-12, host-only study work. Everything here runs on the PC; nothing is wired into the Zephyr firmware, any ISR or the power stage. Moving `lib/foc` onto the board follows the [beginner roadmap](../plan/beginner_roadmap.md) (stage 5 onward) and the stage rules in `AGENTS.md`.
 
 The consolidated reference (workflow, design rules, measured results, float vs fixed point, path to the board) is [foc_knowledge_base.md](./foc_knowledge_base.md).
 

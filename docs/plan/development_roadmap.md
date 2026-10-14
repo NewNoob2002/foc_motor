@@ -1,6 +1,6 @@
 # Development Roadmap
 
-更新日期：2026-09-05。M0 设计基线已确认，M1 收尾中，尚未关闭；M2–M4、M6 未开始，M5 延期。本文是工作区阶段与关闭条件的总表，实施约束仍以 `AGENTS.md` 为准。
+更新日期：2026-09-05。M0 设计基线已确认，M1 收尾中，尚未关闭；M2–M4、M6 未开始，M5 延期。本文是工作区阶段与关闭条件的总表，实施约束仍以 `AGENTS.md` 为准。2026-10-14 起，当前执行路径为[初学者路线图](./beginner_roadmap.md)（Stage 0–7）；本文保留为长期产品阶段门，Stage 与 M 节点的对应见该文第 5 节。
 
 证据入口：[M1 历史构建与 CI](../evidence/m1_build_evidence.md)、[当前 UART3 验证](../evidence/uart3_validation.md)、[风险清单](./risk_list.md)、[架构与测试判据](../design/zephyr_architecture.md)。已通过的历史提交、当前未提交修改和未来设计要求分别记录，不将构建通过等同于实机通过。
 

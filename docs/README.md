@@ -4,7 +4,7 @@ Project rules are in [`AGENTS.md`](../AGENTS.md) at the repository root.
 
 | Folder | Contents |
 |---|---|
-| [`plan/`](./plan/) | [Development roadmap](./plan/development_roadmap.md) (M0–M6 stage gates), [beginner roadmap](./plan/beginner_roadmap.md) (draft), [risk list](./plan/risk_list.md) |
+| [`plan/`](./plan/) | [Development roadmap](./plan/development_roadmap.md) (M0–M6 stage gates), [beginner roadmap](./plan/beginner_roadmap.md) (current execution path), [risk list](./plan/risk_list.md) |
 | [`design/`](./design/) | [Zephyr architecture](./design/zephyr_architecture.md): layers, ISR/thread plan, real-time budget, CI and test design |
 | [`hardware/`](./hardware/) | [Hardware reference](./hardware/hardware_reference.md) with `HW-*` evidence IDs; `schematics/` and `datasheets/` hold the source PDFs (hashes in the reference) |
 | [`study/`](./study/) | [FOC study guide](./study/foc_study_guide.md) (exercises), [FOC knowledge base](./study/foc_knowledge_base.md) (workflow, design rules, results) |

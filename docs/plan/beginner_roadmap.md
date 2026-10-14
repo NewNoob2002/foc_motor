@@ -1,6 +1,6 @@
-# Beginner Roadmap (draft)
+# Beginner Roadmap
 
-Status: **draft for review**, branch `plan/beginner-roadmap`, 2026-10-14. It does not replace [development_roadmap.md](./development_roadmap.md) or change `AGENTS.md` yet; section 5 lists what adopting it would change.
+Status: **adopted 2026-10-14** as the current execution path (`AGENTS.md`, "当前阶段"). **Current stage: 1.** [development_roadmap.md](./development_roadmap.md) stays as the long-term product plan; section 5 maps the two.
 
 The M0–M6 plan is organized around formal stage gates. This plan is organized around **one new skill per stage, each with a result you can see**. Motor power comes only at the last stage. Theory and measured simulation results are in [foc_knowledge_base.md](../study/foc_knowledge_base.md).
 
@@ -93,15 +93,16 @@ Each stage: **learn** (the concept), **do** (the code or setup), **done when** (
 | R-02 (no CPU-independent shutdown) | (a) keep the rule: add a hardware shutdown (comparator pulling SD1–SD3 low) first; (b) accept for a **learning bench only**, limited to a low current-limited supply, and record that acceptance in `AGENTS.md` and `risk_list.md`. A current limit reduces damage but does not replace a shutdown path |
 | Bus voltage and supply | Bench supply with an adjustable current limit; minimum voltage set by the XL7005A |
 | Instruments | Scope and/or logic analyzer (stages 1, 4, 6); milliohm/LCR meter (stage 7) |
-| Evidence level | Lightweight lab notes (section 6) instead of the full M-gate records |
+| Evidence level | Lab notes (section 6) instead of the full M-gate records; they must still carry the fields `AGENTS.md` requires for hardware tests |
 
-## 5. Adopting this plan
+## 5. Adoption (2026-10-14)
 
-If you accept the draft:
+What adopting this plan changed:
 
-- `AGENTS.md` "current stage": replace the M1–M3 gate wording with "beginner roadmap stage N"; allow `lib/foc` in firmware from stage 5 (today only host-only use is authorized); record the stage 7 R-02 decision.
-- `development_roadmap.md`: keep as the long-term product plan, with a pointer to this file for the learning path. Mapping: stage 1 = M1-08/M1-09, stages 2–4 = M2, stage 5 = M3 ARM/WCET, stage 6 = M2/M3 ISR, stage 7 = M4.
-- Hardware-test rules in `AGENTS.md` (board identity, supply, e-stop, recovery) stay.
+- `AGENTS.md` "当前阶段": the current position is a stage number (now stage 1); moving to the next stage needs your explicit confirmation, recorded there with the date. Each stage's allowed scope is listed there: stages 1–4 USB power only with SD1–SD4 low, `lib/foc` in a test firmware from stage 5, the FOC ISR from stage 6, and stage 7 not allowed until the R-02 decision is recorded.
+- `AGENTS.md` "安全默认值": one explicit exception, PWM on the MCU pins in stages 4–6 while DCBUS is disconnected and SD1–SD4 are low.
+- `development_roadmap.md` stays as the long-term product plan. Mapping: stage 1 = M1-08/M1-09, stages 2–4 = M2, stage 5 = M3 ARM/WCET, stage 6 = M2/M3 ISR, stage 7 = M4.
+- Unchanged: the hardware-test rules in `AGENTS.md` (board identity, supply, e-stop, recovery, evidence) and the R-02 rule for powered closed loop.
 
 ## 6. Lab note template
 
@@ -109,7 +110,7 @@ One file per stage in `docs/evidence/lab_notes/` (for example `stage2_encoder.md
 
 ```markdown
 # Stage N — title
-Date / firmware commit / board UID:
+Date / firmware commit / board UID / tool versions:
 Setup: power (USB / DCBUS V, current limit), probes, wiring:
 Steps:
 Results (numbers, screenshots or raw captures):
