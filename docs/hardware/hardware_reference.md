@@ -18,12 +18,19 @@
 | `DOC-MCU-DS` | [STM32G431 数据手册](./datasheets/STM32G431RBT6_规格书.PDF) | 198 页，DS12589 Rev 1，2019-05 | `3546211bc168e1c71440f62854d7faabe404d75ec7e4cfd34288892276bcc847` | MCU 能力、引脚复用和电气参数；版本较旧且 PDF 元数据显示为其他 G4 型号，M1 需补受控最新版、RM0440 和 errata |
 | `DOC-GATE-DS` | [EG2104 数据手册](./datasheets/栅极驱动芯片_EG2104_规格书.PDF) | 12 页，V1.1 | `1b4af9deaf026026a4c4b0e4b54b7e35d2226a051b9b501569fb8b6c6e88d920` | 输入、SD 真值表、传播延迟、死区、自举条件 |
 | `DOC-ENC-DS` | [KTH7823 数据手册](./datasheets/KTH7823.pdf) | 31 页 | `3ebc20e404700dc050ee6b10e3792a6a28038b5fa737ab688f0f41ad59e6fa52` | 角度性能、SPI、ABZ、PWM、订货型号 |
+| `DOC-BUCK-DS` | [XL7005A 数据手册](./datasheets/XL7005A.PDF) | 10 页，Rev 1.2（XLSEMI；文件经 alldatasheet 获取，2026-10-15 用户提供） | `b0bb629bb7d2ce81c8af15f289665aa2b106d56a4901cebd03d788666f8a5465` | U9 降压：输入范围、压差、最大占空比、反馈电压、输出电流 |
 
 尚缺：STM32G431 最新数据手册、RM0440、对应 errata、COS722MR 手册、D0N70N06 MOSFET 手册、完整 BOM、PCB/layout、母线/散热/线束规范。缺失项对应 `R-06`、`R-12`、`R-16`，在取得资料前不得据理想计算冻结功率额定值。
 
 ## 3. 板级拓扑
 
 主板由 STM32G431RBT6、四个 EG2104 半桥驱动级、A/C 两个低侧分流采样链和外部编码器接口组成。项目只使用 A/B/C 三个桥臂；D 桥臂在硬件上确实存在，但由项目策略永久禁止。
+
+### 3.0 电源树
+
+- `HW-PWR-001` — `CONFIRMED`（读图）：DCBUS 由 CN1（MX301-5.0-02P，1 脚 DCBUS、2 脚 PGND）输入；DCBUS 上并 D11 SMAJ40CA 双向 TVS 和 U8/U11 两只 100 µF 电解（耐压未标注）。DCBUS → U13 DSK36 肖特基（串联防反）→ U9 XL7005A VIN；U9 经 L3 47 µH、D8 DSS210 续流，反馈 R1 20 kΩ / R4 2.2 kΩ，输出 `+12V` = 1.25 V × (1 + 20/2.2) ≈ **12.6 V**（C5/C6 10 µF 25 V）。`+12V` 供 EG2104 VCC，并经 U2 RY8411 降压得 `+5V`，再经 U1 LP5907MFX-3.3 LDO 得 `+3.3V`。因此接入 DCBUS 后，MCU 的 3.3 V 由板上 LDO 提供。证据：`DOC-MAIN-SCH` 左上“电源”区（300 dpi 读图，2026-10-15）；`DOC-BUCK-DS` p3 典型应用 Vout = 1.25 × (1 + R2/R1)。
+- `HW-PWR-002` — `CONFIRMED`（计算）：XL7005A 输入工作范围 5–80 V，绝对最大 85 V，最小压差 1 V，最大占空比 100 %，最大输出 0.4 A，150 kHz，VFB 1.225–1.275 V（`DOC-BUCK-DS` p1 Features、p4 绝对最大值、p5 电气特性）。由此 `+12V` 稳压所需最低 DCBUS ≈ 12.6 V + 1 V（压差）+ ~0.5 V（DSK36 正向压降，未查其手册）≈ **14.1 V**；低于此值 XL7005A 以 100 % 占空比跟随输入，`+12V` 约为 DCBUS − 1.5 V。EG2104 VCC 工作范围 2.8–20 V、无欠压锁定说明（`DOC-GATE-DS` §7.2），所以低母线时栅极驱动电压随之下降而不会关断；MOSFET（D0N70N06，无手册）所需栅压未知。上限：SMAJ40CA 关断电压 40 V；其他器件（电解、MOSFET）额定值未知（R-12）。
+- `HW-PWR-003` — `OPEN`：Stage 1–6 中板子由 J-Link 提供 3.3 V（实测约 3.375 V）。接入 DCBUS 后板上 LP5907 也驱动 `+3.3V`，两路电源并联。J-Link 的供电方式与关闭方法、LP5907 能否承受反灌，均未确认；带 DCBUS 前须先确认并关闭 J-Link 供电（只保留 SWD 和 VTref 检测）。
 
 ### 3.1 MCU
 
