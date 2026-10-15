@@ -61,7 +61,6 @@ BUILD_ASSERT(DT_REG_ADDR(TIM1_NODE) == TIM1_BASE && DT_REG_ADDR(ADC2_NODE) == AD
  * connected on this board; checked floating 2026-10-14) and the ISR marker
  * on PB9 (U7-4).
  */
-#define PROBE_PINS            (LL_GPIO_PIN_8 | LL_GPIO_PIN_9 | LL_GPIO_PIN_10)
 #define PROBE_AF              LL_GPIO_AF_6
 #define ISR_MARK_PIN          LL_GPIO_PIN_9
 
@@ -181,13 +180,16 @@ static void dwt_start(void) {
 
 /* PA8-PA10 to TIM1 (AF6), PB9 as a push-pull output, low. PC0-PC3 untouched. */
 static void probe_pins_setup(void) {
-    LL_GPIO_SetPinOutputType(GPIOA, PROBE_PINS, LL_GPIO_OUTPUT_PUSHPULL);
-    LL_GPIO_SetPinSpeed(GPIOA, PROBE_PINS, LL_GPIO_SPEED_FREQ_LOW);
-    LL_GPIO_SetPinPull(GPIOA, PROBE_PINS, LL_GPIO_PULL_NO);
-    LL_GPIO_SetAFPin_8_15(GPIOA, LL_GPIO_PIN_8, PROBE_AF);
-    LL_GPIO_SetAFPin_8_15(GPIOA, LL_GPIO_PIN_9, PROBE_AF);
-    LL_GPIO_SetAFPin_8_15(GPIOA, LL_GPIO_PIN_10, PROBE_AF);
-    LL_GPIO_SetPinMode(GPIOA, PROBE_PINS, LL_GPIO_MODE_ALTERNATE);
+    /* SetPinMode/Speed/Pull and SetAFPin act on one pin each (POSITION_VAL), not on a mask. */
+    static const uint32_t probe_pins[] = {LL_GPIO_PIN_8, LL_GPIO_PIN_9, LL_GPIO_PIN_10};
+
+    for (size_t i = 0; i < ARRAY_SIZE(probe_pins); i++) {
+        LL_GPIO_SetPinOutputType(GPIOA, probe_pins[i], LL_GPIO_OUTPUT_PUSHPULL);
+        LL_GPIO_SetPinSpeed(GPIOA, probe_pins[i], LL_GPIO_SPEED_FREQ_LOW);
+        LL_GPIO_SetPinPull(GPIOA, probe_pins[i], LL_GPIO_PULL_NO);
+        LL_GPIO_SetAFPin_8_15(GPIOA, probe_pins[i], PROBE_AF);
+        LL_GPIO_SetPinMode(GPIOA, probe_pins[i], LL_GPIO_MODE_ALTERNATE);
+    }
 
     LL_GPIO_ResetOutputPin(GPIOB, ISR_MARK_PIN);
     LL_GPIO_SetPinOutputType(GPIOB, ISR_MARK_PIN, LL_GPIO_OUTPUT_PUSHPULL);
