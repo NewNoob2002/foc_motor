@@ -16,6 +16,15 @@
 		zephyr,sram = &sram0;
 		zephyr,flash = &flash0;
 	};
+
+	/*
+	 * HW-ENC-007 harness as built: encoder CN2-4 Z -> U7-3 PB3, rising edge
+	 * once per turn. PB3 is also TRACESWO; only SWD is used, so the SWO
+	 * trace output is unavailable while this pin is the Z input.
+	 */
+	zephyr,user {
+		encoder-z-gpios = <&gpiob 3 (GPIO_ACTIVE_HIGH | GPIO_PULL_UP)>;
+	};
 };
 
 &clk_hse {
@@ -86,6 +95,40 @@
 	dmas = <&dmamux1 2 29 (STM32_DMA_PERIPH_TX | STM32_DMA_PRIORITY_LOW)>;
 	dma-names = "tx";
 	status = "okay";
+};
+
+/*
+ * HW-ENC-005/007: encoder A -> PB4 TIM3_CH1, B -> PB5 TIM3_CH2 (AF2). The
+ * KTH7823 holds A/B/Z high at power-up, so the pull-ups match its idle level
+ * and keep the inputs defined while the harness is unplugged.
+ */
+&tim3_ch1_pb4 {
+	bias-pull-up;
+};
+
+&tim3_ch2_pb5 {
+	bias-pull-up;
+};
+
+&timers3 {
+	status = "okay";
+
+	encoder: qdec {
+		compatible = "st,stm32-qdec";
+		pinctrl-0 = <&tim3_ch1_pb4 &tim3_ch2_pb5>;
+		pinctrl-names = "default";
+		/* x4: count every A and B edge, 1024 A/B periods -> 4096 counts per turn (HW-ENC-003). */
+		st,encoder-mode = <0x3>;
+		/* 8 samples at 170 MHz = 47 ns, well below the edge spacing at motor speed. */
+		st,input-filter-level = <3>;
+		st,counts-per-revolution = <4096>;
+		status = "okay";
+	};
+};
+
+&exti {
+	/* Same level as the other drivers; the FOC ISR is the only planned zero-latency IRQ. */
+	interrupts = <6 5>, <7 5>, <8 5>, <9 5>, <10 5>, <23 5>, <40 5>;
 };
 
 &dma1 {

@@ -37,7 +37,7 @@
 
 - `HW-UART-001` — `CONFIRMED`：主板 `USART1_TX`/`USART1_RX` 分别连接 STM32G431 的 PB6/PB7，并经 U26 CH340N 接到板载 Type-C。2026-09-05 起固件禁用 USART1，不再使用该日志路径。证据：`DOC-MAIN-SCH` U3/U26 与 USART1 网络；`DOC-MCU-DS` GPIO alternate-function table。
 - `HW-UART-002` — `CONFIRMED`：当前 USART3 日志 TX 使用 Zephyr deferred logging + asynchronous UART backend。devicetree 的 DMA selector `2` 在当前 STM32 DMA v2 驱动中映射到 DMA1 Channel 3，DMAMUX request `29` 对应 USART3_TX；USART3 IRQ 39 和 DMA1 IRQ 均为普通优先级 5。request 29 与本机固定 STM32 HAL 的 `DMA_REQUEST_USART3_TX` / `LL_DMAMUX_REQ_USART3_TX` 一致。该路径只服务诊断线程，FOC ISR 禁止调用日志或 UART API。
-- `HW-UART-003` — `CONFIRMED`：排针 H2 的 6 脚为 USART3_TX/PB10（U3 第 30 脚），5 脚为 USART3_RX/PB11（U3 第 33 脚），1 脚为 DGND；PB10/PB11 使用 AF7。Zephyr console 和 shell-uart 均选 USART3，921600 8N1。外接 3.3 V TTL 转接器 RX 接 H2/6、TX 接 H2/5、GND 接 H2/1；用户确认本次连接到 `/dev/ttyUSB0`。证据：`DOC-MAIN-SCH` U3/H2；固定 HAL pinctrl 文件 `stm32g431r(6-8-b)tx-pinctrl.dtsi`。
+- `HW-UART-003` — `CONFIRMED`：排针 H2 的 6 脚为 USART3_TX/PB10（U3 第 30 脚），5 脚为 USART3_RX/PB11（U3 第 33 脚），1 脚为 +3.3V，2 脚 SWDIO，3 脚 SWCLK，4 脚为 DGND；PB10/PB11 使用 AF7。Zephyr console 和 shell-uart 均选 USART3，921600 8N1。外接 3.3 V TTL 转接器 RX 接 H2/6、TX 接 H2/5、GND 应接 H2/4；用户确认本次连接到 `/dev/ttyUSB0`。证据：`DOC-MAIN-SCH` U3/H2；固定 HAL pinctrl 文件 `stm32g431r(6-8-b)tx-pinctrl.dtsi`。2026-10-14 更正：原文“1 脚为 DGND、GND 接 H2/1”与原理图不符；400 dpi 原理图读图显示 H2-1 接 +3.3V、H2-4 接 DGND，本板实测 H2-1 对地 +3.34 V。H2-4 对地连通性未单独测量。
 - 2026-08-22 的板载 CH340 历史验证曾通过 `/dev/ttyUSB0` 完整收到两次启动共 2520 B；该记录见 `docs/evidence/m1_build_evidence.md` 第 5 节，不代表当前排针接线。Linux 串口编号及无独立序列号的 CH340 by-id 名称不能单独区分板载和外接转换器，必须结合接线与本次固件验证。
 - 当前 DMA 分配是 M1 诊断基线。M2 接入 ADC2 DMA 时优先选择不冲突的 DMA selector；若硬件/驱动约束形成冲突，再调整 UART TX DMA，不改变 FOC ISR 禁止日志的边界。
 
@@ -88,7 +88,7 @@
 | `HW-ENC-004` | `CONFIRMED` | PB4 可复用 TIM3_CH1/SPI1_MISO，PB5 可复用 TIM3_CH2/SPI1_MOSI；PB3 是 SPI1_SCK，PB9 可作 SPI1_NSS/GPIO CS | `DOC-MAIN-SCH` U3/U7；`DOC-MCU-DS` GPIO alternate-function tables |
 | `HW-ENC-005` | `CONFIRMED_WITH_CONDITION` | 快速运行路径采用 CN2 A/B -> PB4/PB5 -> TIM3 encoder mode；Z 另接可捕获 GPIO。TIM3 是 16-bit，软件按每个控制周期读取有符号增量并扩展位置 | `DOC-ENC-SCH` CN2；`DOC-MCU-DS` §3.24.2 和引脚复用表 |
 | `HW-ENC-006` | `POLICY` | SPI 仅用于电机停机时的配置/诊断，不进入快速环，也不在 FOC ISR 调用 SPI API | PB4/PB5 的 TIM3 与 SPI1 复用冲突；`DOC-ENC-SCH` CN1/CN2 分离 |
-| `HW-ENC-007` | `OPEN` | 主板 U7 标 +5 V，编码器板标 VCC3.3，且两个连接器针序并不直接匹配；M2 前必须冻结 3.3 V 线束/调试夹具，禁止直接对插猜测 | `DOC-MAIN-SCH` U7；`DOC-ENC-SCH` CN1/CN2 |
+| `HW-ENC-007` | `CONFIRMED` | 主板 U7（2.54-6P）：1 VCC、2 SPI1_MISO/PB4、3 SPI1_SCK/PB3、4 SPI1_CS/PB9、5 SPI1_MOSI/PB5、6 DGND。VCC 网络只连 U7-1 和测试点 TP1，旁边 TP5 为 +3.3V、TP4 为 +5V，推测由跳线选择；2026-10-14 本板实测 U7-1 对地 3.35 V（跳线方式未检查）。编码器板 CN2：1 GND、2 B、3 NC、4 Z、5 A、6 VCC3.3。两者针序不匹配，直接对插会使 VCC 与 GND 对接，禁止对插。实际线束（2026-10-14 制作）：CN2-5 A→U7-2（PB4/TIM3_CH1）、CN2-2 B→U7-5（PB5/TIM3_CH2）、CN2-4 Z→U7-3（PB3，GPIO 中断；原计划 U7-4/PB9，按实际接线改固件，PB3 的 SWO 功能因此不可用）、CN2-1 GND→U7-6、CN2-6 VCC3.3→U7-1。Stage 2 run 2 功能验证：每圈 4096 count、顺时针（从轴端看）计数增加、Z 每圈一次且 11 次都在同一 count | `DOC-MAIN-SCH` U7/TP1/TP4/TP5；`DOC-ENC-SCH` CN1/CN2；2026-10-14 万用表实测；`docs/evidence/lab_notes/stage2_encoder.md` run 2 |
 
 选择 AB 作为快速路径意味着运行时得到的是增量位置，不是持续 SPI 绝对角。启动必须执行转子电角度对齐/归零，并用 Z 做索引或一致性检查；若产品要求上电即获得绝对机械角或运行中持续绝对诊断，需要增加独立 SPI 接线或改版。
 

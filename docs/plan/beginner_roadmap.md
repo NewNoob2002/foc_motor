@@ -55,7 +55,7 @@ Register addresses (RM0440, check against the reference manual): GPIOA `0x4800_0
 ### Stage 2 — Read the encoder by hand
 
 - **Learn:** quadrature (A/B), counts per turn, direction, the index pulse (Z), mechanical vs electrical angle.
-- **Do:** build the 3.3 V encoder harness first (R-08: the board connector is labelled 5 V and the pinouts differ). TIM3 in encoder mode; print the count and `theta_e` over UART at about 10 Hz; turn the shaft by hand.
+- **Do:** build the 3.3 V encoder harness first (R-08: the two connectors' pinouts differ, and plugging them together shorts VCC to GND; wiring in `HW-ENC-007` of the hardware reference). TIM3 in encoder mode; print the count and `theta_e` over UART at about 10 Hz; turn the shaft by hand.
 - **Done when:** one turn = 4096 counts, the sign matches the direction you turn, Z comes once per turn at the same count, no counts lost after many turns back and forth.
 
 ### Stage 3 — Read the ADC

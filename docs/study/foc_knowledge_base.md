@@ -180,7 +180,7 @@ Hardware tests need explicit authorization, a current-limited supply, an emergen
 | Gate | Status today | What closes it |
 |---|---|---|
 | M1 close | Open. **R-18 BLOCKER** (no real SD1–SD4/PC0–PC3 waveforms at reset/boot), M1-09 pre-check missing (supply voltage, current limit, e-stop), UART3 repeat capture, R-16 documents, CI evidence for the current revision | Scope/logic-analyzer captures with no bus voltage; pre-check record; evidence summary |
-| Enter M2 | Needs your explicit gate confirmation and a frozen encoder harness (**R-08**: 5 V vs 3.3 V, pinouts differ) | Confirmation + harness/fixture |
+| Enter M2 | Needs your explicit gate confirmation and a frozen encoder harness (**R-08**: the connector pinouts differ; wiring in `HW-ENC-007`) | Confirmation + harness/fixture |
 | M2 BSP, no-power HIL | Not started | PWM (frequency, centering, sync update, dead time, bootstrap), ADC2/DMA (trigger phase, `[IA, IC]` skew, offsets, gains), encoder (direction, counts, Z), DWT timing; raw evidence |
 | M3 close | Host work done for Clarke/Park/PI/SVPWM; no ARM build or WCET yet | ARM build + WCET benchmark of the same `lib/foc` sources, no power output; needs your confirmation |
 | M4 powered closed loop | **Blocked by R-02**: no CPU-independent hardware shutdown on this board revision. Also R-12 (no layout/BOM/SOA), unknown bus voltage and current limits, unmeasured R/L/psi | Hardware path (comparator/fault logic pulling SD1–SD3 low, latched) with measured turn-off time; parameter and power reviews |
