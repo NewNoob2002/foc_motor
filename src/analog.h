@@ -17,13 +17,22 @@
 #include <zephyr/devicetree.h>
 
 /* 12-bit full-scale code (RM0440: V = code * VREF+ / 4095). */
-#define ANALOG_FULL_SCALE     4095
+#define ANALOG_FULL_SCALE       4095
 
 /* VREF+ = VDDA = the board 3.3 V rail; the binding default is 3300. */
-#define ANALOG_VDDA_MV        DT_PROP(DT_NODELABEL(adc2), vref_mv)
+#define ANALOG_VDDA_MV          DT_PROP(DT_NODELABEL(adc2), vref_mv)
 
 /* 1 / (5 mOhm shunt * gain 10) = 20 A/V (HW-ADC-001/002). */
-#define ANALOG_SHUNT_MA_PER_V 20000
+#define ANALOG_SHUNT_MA_PER_V   20000
+
+/* DC bus divider R83 / R56 (HW-ADC-013). */
+#define ANALOG_VBUS_DIV_TOP_OHM 100000
+#define ANALOG_VBUS_DIV_BOT_OHM 4700
+
+/* DC bus volts per ADC count, for the float control path: VDDA / 4095 * (100k + 4.7k) / 4.7k. */
+#define ANALOG_VBUS_V_PER_CODE                                                                                         \
+    ((float)ANALOG_VDDA_MV * (float)(ANALOG_VBUS_DIV_TOP_OHM + ANALOG_VBUS_DIV_BOT_OHM)                                \
+     / (1000.0f * (float)ANALOG_FULL_SCALE * (float)ANALOG_VBUS_DIV_BOT_OHM))
 
 /* Phase current per ADC count, in A, for the float control path: VDDA / 4095 * 20 A/V. */
 #define ANALOG_PHASE_A_PER_CODE                                                                                        \

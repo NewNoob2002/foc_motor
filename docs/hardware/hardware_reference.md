@@ -30,7 +30,7 @@
 
 - `HW-PWR-001` — `CONFIRMED`（读图）：DCBUS 由 CN1（MX301-5.0-02P，1 脚 DCBUS、2 脚 PGND）输入；DCBUS 上并 D11 SMAJ40CA 双向 TVS 和 U8/U11 两只 100 µF 电解（耐压未标注）。DCBUS → U13 DSK36 肖特基（串联防反）→ U9 XL7005A VIN；U9 经 L3 47 µH、D8 DSS210 续流，反馈 R1 20 kΩ / R4 2.2 kΩ，输出 `+12V` = 1.25 V × (1 + 20/2.2) ≈ **12.6 V**（C5/C6 10 µF 25 V）。`+12V` 供 EG2104 VCC，并经 U2 RY8411 降压得 `+5V`，再经 U1 LP5907MFX-3.3 LDO 得 `+3.3V`。因此接入 DCBUS 后，MCU 的 3.3 V 由板上 LDO 提供。证据：`DOC-MAIN-SCH` 左上“电源”区（300 dpi 读图，2026-10-15）；`DOC-BUCK-DS` p3 典型应用 Vout = 1.25 × (1 + R2/R1)。
 - `HW-PWR-002` — `CONFIRMED`（计算）：XL7005A 输入工作范围 5–80 V，绝对最大 85 V，最小压差 1 V，最大占空比 100 %，最大输出 0.4 A，150 kHz，VFB 1.225–1.275 V（`DOC-BUCK-DS` p1 Features、p4 绝对最大值、p5 电气特性）。由此 `+12V` 稳压所需最低 DCBUS ≈ 12.6 V + 1 V（压差）+ ~0.5 V（DSK36 正向压降，未查其手册）≈ **14.1 V**；低于此值 XL7005A 以 100 % 占空比跟随输入，`+12V` 约为 DCBUS − 1.5 V。EG2104 VCC 工作范围 2.8–20 V、无欠压锁定说明（`DOC-GATE-DS` §7.2），所以低母线时栅极驱动电压随之下降而不会关断；MOSFET（D0N70N06，无手册）所需栅压未知。上限：SMAJ40CA 关断电压 40 V；其他器件（电解、MOSFET）额定值未知（R-12）。
-- `HW-PWR-003` — `OPEN`：Stage 1–6 中板子由 J-Link 提供 3.3 V（实测约 3.375 V）。接入 DCBUS 后板上 LP5907 也驱动 `+3.3V`，两路电源并联。J-Link 的供电方式与关闭方法、LP5907 能否承受反灌，均未确认；带 DCBUS 前须先确认并关闭 J-Link 供电（只保留 SWD 和 VTref 检测）。
+- `HW-PWR-003` — `CONFIRMED`（读图）+ 处理方式（用户 2026-10-15）：Stage 1–6 中板子由 J-Link 提供 3.3 V（实测约 3.375 V）。接入 DCBUS 后，板上 LP5907 也驱动 `+3.3V`，两路电源会并联。处理：用户关闭 J-Link 供电，只保留 SWD 和 VTref 电平检测（2026-10-15）。另外 USB 的 `USB_5V` 经 R35（0 Ω，无二极管）直接接 `+5V`，接入 DCBUS 后 RY8411 输出与 USB 5 V 并联，可能向电脑 USB 口反灌。因此 **USB 与 DCBUS 不得同时连接**：无 DCBUS 时可由 USB 供电（烧录、调试），带 DCBUS 时只由 DCBUS 供电。证据：`DOC-MAIN-SCH` 右下 USB1/R35/U26 区（300 dpi 读图）。
 
 ### 3.1 MCU
 

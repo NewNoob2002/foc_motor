@@ -55,9 +55,23 @@ BUILD_ASSERT(DT_DMAS_CELL_BY_NAME(DT_NODELABEL(usart3), tx, slot) == 29, "USART3
 K_THREAD_STACK_DEFINE(report_stack, REPORT_STACK_SIZE);
 static struct k_thread report_thread;
 
+/* One capture line is about 60 characters, 0.7 ms at 921600 baud; the pause keeps the 1 KiB log buffer from dropping. */
+#define CAPTURE_LINE_PAUSE_MS 2
+
+/* Supervise FOC progress in system-timer ISR context, independent of report-thread delays. */
+static void supervise_expiry(struct k_timer* timer) {
+    ARG_UNUSED(timer);
+    pwm_adc_supervise();
+}
+
+K_TIMER_DEFINE(supervise_timer, supervise_expiry, NULL);
+
 static const char* const mode_names[] = {
-    [FOC_MODE_VOLTAGE] = "voltage (v_d 1 V of 12 V at the encoder angle)",
-    [FOC_MODE_CURRENT] = "current loop (iq_ref 1 A, placeholder gains)",
+    [FOC_MODE_IDLE] = "idle (zero vector)",
+    [FOC_MODE_DC] = "dc (fixed vector, ramped)",
+    [FOC_MODE_STEP] = "step (capture)",
+    [FOC_MODE_VOLTAGE] = "voltage (stage 6, 1 V at the encoder angle)",
+    [FOC_MODE_CURRENT] = "current loop (stage 6, placeholder gains)",
 };
 
 /* Thousandths, truncated toward zero; the inputs are a few units at most. */
@@ -93,6 +107,13 @@ static __noinline void report(uint32_t n, const pwm_adc_stats_t* st, bool timing
             after_top_min / 100U, after_top_min % 100U, after_top_max / 100U, after_top_max % 100U, st->counting_up);
     LOG_INF("  overruns %u, missed %u, fault 0x%x, DMA errors %u, ADC overruns %u; CCR %u %u %u", st->overruns,
             st->missed, st->fault, st->dma_errors, st->adc_overruns, st->ccr[0], st->ccr[1], st->ccr[2]);
+    if (fc->cal_failed) {
+        LOG_ERR("  current calibration FAILED: offsets IA %d.%03d IC %d.%03d counts; spreads IA %u IC %u counts; "
+                "power remains disabled until reset",
+                milli(fc->ia_offset) / 1000, milli(fc->ia_offset) % 1000, milli(fc->ic_offset) / 1000,
+                milli(fc->ic_offset) % 1000, fc->ia_spread, fc->ic_spread);
+        return;
+    }
     if (!fc->calibrated) {
         LOG_INF("  calibrating current offsets");
         return;
@@ -102,6 +123,30 @@ static __noinline void report(uint32_t n, const pwm_adc_stats_t* st, bool timing
             milli(fc->ic_offset) % 1000);
     LOG_INF("  i_d %d mA, i_q %d mA, v_d %d mV, v_q %d mV, SVPWM limited %d", milli(fc->i_d), milli(fc->i_q),
             milli(fc->v_d), milli(fc->v_q), fc->limited ? 1 : 0);
+}
+
+/* Power-stage state and the averaged measurements for the R test. */
+static __noinline void report_power(const pwm_adc_stats_t* st, const foc_ctrl_snapshot_t* fc) {
+    LOG_INF("  power %s (request %d, on %u times), VBUS %d mV (avg %d mV); avg IA %d IB %d IC %d mA",
+            st->power_on ? "ON" : "off", fc->power_req ? 1 : 0, st->power_ons, milli(fc->vbus), milli(fc->vbus_f),
+            milli(fc->ia_f), milli(fc->ib_f), milli(fc->ic_f));
+    LOG_INF("  cmd: arm %s, mode %u%s, v %u mV, theta_e %u; encoder mech %u",
+            foc_ctrl_cmd.arm == FOC_CTRL_ARM_KEY ? "KEY" : "0", foc_ctrl_cmd.mode,
+            fc->mode_refused ? " (refused, idle runs)" : "", foc_ctrl_cmd.v_mv, foc_ctrl_cmd.theta_e,
+            fc->enc_count % ENCODER_COUNTS_PER_REV);
+}
+
+/* Prints a finished step capture, then hands the buffer back to the ISR. */
+static __noinline void dump_capture(const foc_ctrl_capture_t* c) {
+    LOG_INF("cap_begin seq %u, step %u mV at theta_e %u, VBUS %d mV, power %s, %u samples (%u zero, %u on)", c->seq,
+            c->v_mv, c->theta_e, milli(c->vbus), c->power_on ? "on" : "OFF", FOC_CTRL_CAPTURE_LEN, FOC_CTRL_CAPTURE_PRE,
+            FOC_CTRL_CAPTURE_ON);
+    for (uint32_t k = 0; k < FOC_CTRL_CAPTURE_LEN; k++) {
+        LOG_INF("cap %u %u %d %d", c->seq, k, c->ia_ma[k], c->ic_ma[k]);
+        k_msleep(CAPTURE_LINE_PAUSE_MS);
+    }
+    LOG_INF("cap_end seq %u", c->seq);
+    foc_ctrl_capture_release();
 }
 
 /* Mechanical count, electrical angle (0..4095) and the three duties of one ISR step. */
@@ -128,18 +173,27 @@ static void report_loop(void* p1, void* p2, void* p3) {
         LOG_ERR("pwm_adc_init failed: %d", ret);
         return;
     }
-    LOG_INF("FOC ISR on: TIM1 ARR %u (20 kHz center-aligned, RCR 1), ADC2 [IA, IC] on TRGO2 at the top; "
-            "offset calibration %u periods, then mode %s",
-            PWM_ARR, FOC_CTRL_CAL_SAMPLES,
-            mode_names[(atomic_get(&foc_ctrl_mode) == FOC_MODE_CURRENT) ? FOC_MODE_CURRENT : FOC_MODE_VOLTAGE]);
+    k_timer_start(&supervise_timer, K_MSEC(10), K_MSEC(10));
+    LOG_INF("FOC ISR on: TIM1 ARR %u (20 kHz center-aligned, RCR 1), ADC2 [IA, IC, VBUS] on TRGO2 at the top; "
+            "offset calibration %u periods; power stage off",
+            PWM_ARR, FOC_CTRL_CAL_SAMPLES);
+    LOG_INF("command block foc_ctrl_cmd at %p: arm +0, mode +4, v_mv +8, theta_e +12, step_seq +16; arm key 0x%08x",
+            (void*)&foc_ctrl_cmd, FOC_CTRL_ARM_KEY);
 
     /* Drop the start-up window. */
     (void)pwm_adc_stats_take(&st);
+    bool supervisor_reported = false;
+
     for (uint32_t n = 1;; n++) {
         k_msleep(ROT_PERIOD_MS);
+
+        if (!supervisor_reported && pwm_adc_supervisor_tripped()) {
+            LOG_ERR("FOC ISR progress below 150 per 10 ms while powered; power stage off, timer stopped until reset");
+            supervisor_reported = true;
+        }
         if (!pwm_adc_outputs_safe()) {
             pwm_adc_stop();
-            LOG_ERR("TIM1 output invariant broken (PC0-PC3 or CCER); outputs off, timer stopped");
+            LOG_ERR("pin invariant broken (PC0-PC3, SD1-SD4 or CCER); power stage off, outputs off, timer stopped");
             return;
         }
         foc_ctrl_snapshot(&fc);
@@ -150,6 +204,15 @@ static void report_loop(void* p1, void* p2, void* p3) {
             bool timing_valid = pwm_adc_stats_take(&st);
 
             report(n / REPORT_EVERY, &st, timing_valid, &fc);
+            if (fc.calibrated) {
+                report_power(&st, &fc);
+            }
+        }
+
+        const foc_ctrl_capture_t* c = foc_ctrl_capture_get();
+
+        if (c != NULL) {
+            dump_capture(c);
         }
     }
 }
@@ -157,8 +220,8 @@ static void report_loop(void* p1, void* p2, void* p3) {
 int main(void) {
     int ret = encoder_init();
 
-    LOG_INF("Stage 6 build: FOC bench, then the FOC ISR without motor power (TIM1 CH1-3 on PA8-PA10, CH3N on PB9 "
-            "(U7-4)); PC0-PC3 analog; SD1-SD4 low");
+    LOG_INF("Stage 7 build: FOC bench, then the FOC ISR; power stage off until armed (VBUS 14.0-16.5 V, arm key); "
+            "TIM1 CH1-3 also on PA8-PA10, CH3N on PB9 (U7-4)");
     if (ret < 0) {
         LOG_ERR("encoder_init failed: %d", ret);
         return 0;
