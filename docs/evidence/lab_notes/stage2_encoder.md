@@ -1,6 +1,6 @@
 # Stage 2 — Read the encoder by hand
 
-Status: **all "done when" criteria pass** (run 2, 2026-10-14). Moving to Stage 3 needs the user's confirmation, recorded in `AGENTS.md`.
+Status: **done** (2026-10-14). All "done when" criteria pass (run 2); the user confirmed Stage 2 done and Stage 3 entry the same day (`AGENTS.md`).
 
 ## Setup
 
