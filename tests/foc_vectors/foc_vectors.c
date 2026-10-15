@@ -4,10 +4,7 @@
 
 #include <math.h> /* sinf, cosf */
 
-#include "foc/foc_pi.h"
-#include "foc/foc_svpwm.h"
-
-#define FOC_VECTORS_INV_SQRT3 0.57735027f
+#include "foc/foc_current.h"
 
 /*
  * Columns: ia, ic, theta, id_ref, iq_ref, vbus, int_d, int_q.
@@ -85,18 +82,20 @@ const foc_vector_in_t foc_vectors_in[FOC_VECTORS_COUNT] = {
 void foc_vector_step(const foc_vector_in_t* in, foc_vector_out_t* out) {
     foc_abc_t i_abc = {.a = in->ia, .b = -(in->ia + in->ic), .c = in->ic};
     foc_sincos_t sc = {.sin_theta = sinf(in->theta), .cos_theta = cosf(in->theta)};
-    float v_lim = in->vbus * FOC_VECTORS_INV_SQRT3;
-    foc_pi_t pi_d = {
-        .kp = FOC_VECTORS_KP, .ki = FOC_VECTORS_KI, .out_min = -v_lim, .out_max = v_lim, .integral = in->int_d};
-    foc_pi_t pi_q = {
-        .kp = FOC_VECTORS_KP, .ki = FOC_VECTORS_KI, .out_min = -v_lim, .out_max = v_lim, .integral = in->int_q};
+    foc_dq_t i_ref = {.d = in->id_ref, .q = in->iq_ref};
+    foc_current_t cc = {
+        .pi_d = {.kp = FOC_VECTORS_KP, .ki = FOC_VECTORS_KI, .integral = in->int_d},
+        .pi_q = {.kp = FOC_VECTORS_KP, .ki = FOC_VECTORS_KI, .integral = in->int_q},
+    };
+    foc_current_out_t res;
 
-    out->i_dq = foc_park(foc_clarke(i_abc), sc);
-    out->v_dq.d = foc_pi_step(&pi_d, in->id_ref - out->i_dq.d, FOC_VECTORS_DT_S);
-    out->v_dq.q = foc_pi_step(&pi_q, in->iq_ref - out->i_dq.q, FOC_VECTORS_DT_S);
-    out->v_int.d = pi_d.integral;
-    out->v_int.q = pi_q.integral;
-    out->limited = foc_svpwm(foc_inv_park(out->v_dq, sc), in->vbus, &out->duty);
+    foc_current_step(&cc, i_abc, sc, i_ref, in->vbus, FOC_VECTORS_DT_S, &res);
+    out->i_dq = res.i_dq;
+    out->v_dq = res.v_dq;
+    out->v_int.d = cc.pi_d.integral;
+    out->v_int.q = cc.pi_q.integral;
+    out->duty = res.duty;
+    out->limited = res.limited;
 }
 
 void foc_vector_fields(const foc_vector_out_t* out, float* fields) {

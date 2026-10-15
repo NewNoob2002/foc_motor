@@ -14,8 +14,20 @@
 
 #include <stdint.h>
 
+#include <zephyr/devicetree.h>
+
 /* 12-bit full-scale code (RM0440: V = code * VREF+ / 4095). */
-#define ANALOG_FULL_SCALE 4095
+#define ANALOG_FULL_SCALE     4095
+
+/* VREF+ = VDDA = the board 3.3 V rail; the binding default is 3300. */
+#define ANALOG_VDDA_MV        DT_PROP(DT_NODELABEL(adc2), vref_mv)
+
+/* 1 / (5 mOhm shunt * gain 10) = 20 A/V (HW-ADC-001/002). */
+#define ANALOG_SHUNT_MA_PER_V 20000
+
+/* Phase current per ADC count, in A, for the float control path: VDDA / 4095 * 20 A/V. */
+#define ANALOG_PHASE_A_PER_CODE                                                                                        \
+    ((float)ANALOG_VDDA_MV * (float)ANALOG_SHUNT_MA_PER_V / (1e6f * (float)ANALOG_FULL_SCALE))
 
 /* Pin voltage in mV for a code given in hundredths of a count. */
 int32_t analog_code_x100_to_mv(int32_t code_x100);

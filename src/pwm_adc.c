@@ -3,6 +3,7 @@
 #include "pwm_adc.h"
 
 #include "cycles.h"
+#include "encoder.h"
 
 #include <errno.h>
 
@@ -50,10 +51,8 @@ BUILD_ASSERT(DT_REG_ADDR(TIM1_NODE) == TIM1_BASE && DT_REG_ADDR(ADC2_NODE) == AD
 /* ADC regular group start: OC4REF rises one tick before the counter top. */
 #define TRIGGER_CCR4          (PWM_ARR - 1U)
 
-/* Fixed Stage 4 duties 0.25 / 0.50 / 0.75 of the period. */
-#define CCR_DUTY_25           (PWM_ARR / 4U)
+/* 50 %: zero line-to-line voltage, used before the first step and after a fault. */
 #define CCR_DUTY_50           (PWM_ARR / 2U)
-#define CCR_DUTY_75           (PWM_ARR * 3U / 4U)
 
 /* PC0-PC3 (PWMA-D) must stay analog: MODER bits 0-7 all set. */
 #define GPIOC_PWM_PINS_ANALOG 0xFFU
@@ -83,20 +82,59 @@ static atomic_t reset_req;
 static uint32_t last_entry;
 static bool have_last_entry;
 
-/* Written by the thread (pwm_adc_set_mode), read by the ISR. */
-static atomic_t mode = PWM_MODE_CH3_25;
-static bool ch3_high_duty;
+/* Set once by pwm_adc_init() before the ISR is enabled. */
+static pwm_adc_step_fn step_fn;
+static uint32_t overruns_in_a_row;
+
+/*
+ * Forced-overrun test (Stage 6): the debugger writes test_spin_cycles, then
+ * test_spin_count; the next test_spin_count ISRs busy-wait until they have
+ * run test_spin_cycles. Both stay 0 in normal operation.
+ */
+static volatile uint32_t test_spin_cycles;
+static volatile uint32_t test_spin_count;
 
 static void stats_reset_locked(void) {
-    uint32_t dma_errors = stats.dma_errors;
-    uint32_t adc_overruns = stats.adc_overruns;
+    pwm_adc_stats_t keep = stats;
 
     stats = (pwm_adc_stats_t){
         .period_min = UINT32_MAX,
         .cnt_min = UINT16_MAX,
-        .dma_errors = dma_errors,
-        .adc_overruns = adc_overruns,
+        .ccr = {keep.ccr[0], keep.ccr[1], keep.ccr[2]},
+        .overruns = keep.overruns,
+        .missed = keep.missed,
+        .fault = keep.fault,
+        .dma_errors = keep.dma_errors,
+        .adc_overruns = keep.adc_overruns,
     };
+}
+
+static uint16_t duty_to_ccr(float duty) {
+    /* PWM mode 1, center-aligned: the output is high while CNT < CCR, so duty = CCR / ARR. */
+    if (!(duty > 0.0f)) {
+        return 0U; /* also NaN */
+    }
+    if (duty >= 1.0f) {
+        return (uint16_t)PWM_ARR;
+    }
+    return (uint16_t)(duty * (float)PWM_ARR + 0.5f);
+}
+
+static void set_ccr(uint16_t a, uint16_t b, uint16_t c) {
+    /* Preload: the values wait for the next update event, the next counter top. */
+    LL_TIM_OC_SetCompareCH1(TIM1, a);
+    LL_TIM_OC_SetCompareCH2(TIM1, b);
+    LL_TIM_OC_SetCompareCH3(TIM1, c);
+    stats.ccr[0] = a;
+    stats.ccr[1] = b;
+    stats.ccr[2] = c;
+}
+
+/* Outputs off (MOE = 0) and 50 % duty; the counter keeps running so the ISR keeps its statistics. */
+static void fault_latch(uint32_t reason) {
+    LL_TIM_DisableAllOutputs(TIM1);
+    set_ccr(CCR_DUTY_50, CCR_DUTY_50, CCR_DUTY_50);
+    stats.fault |= reason;
 }
 
 ISR_DIRECT_DECLARE(dma_isr) {
@@ -106,6 +144,7 @@ ISR_DIRECT_DECLARE(dma_isr) {
     bool up = LL_TIM_GetDirection(TIM1) == LL_TIM_COUNTERDIRECTION_UP;
     bool dma_error = LL_DMA_IsActiveFlag_TE1(DMA2) != 0U;
     bool overrun = LL_ADC_IsActiveFlag_OVR(ADC2) != 0U;
+    pwm_adc_sample_t sample = {.ia_code = adc_buf[0], .ic_code = adc_buf[1], .enc_count = encoder_count()};
 
     LL_DMA_ClearFlag_GI1(DMA2);
     if (overrun) {
@@ -116,6 +155,17 @@ ISR_DIRECT_DECLARE(dma_isr) {
     if (atomic_cas(&reset_req, 1, 0)) {
         stats_reset_locked();
     }
+    if (dma_error) {
+        stats.dma_errors++;
+        fault_latch(PWM_ADC_FAULT_DMA_ERROR);
+    }
+    if (stats.fault == 0U) {
+        pwm_adc_duty_t duty;
+
+        step_fn(&sample, &duty);
+        set_ccr(duty_to_ccr(duty.a), duty_to_ccr(duty.b), duty_to_ccr(duty.c));
+    }
+
     if (have_last_entry) {
         uint32_t period = entry - last_entry;
 
@@ -129,30 +179,31 @@ ISR_DIRECT_DECLARE(dma_isr) {
     stats.cnt_min = MIN(stats.cnt_min, cnt);
     stats.cnt_max = MAX(stats.cnt_max, cnt);
     stats.counting_up += up ? 1U : 0U;
-    stats.ia_last = adc_buf[0];
-    stats.ic_last = adc_buf[1];
-    stats.ia_sum += stats.ia_last;
-    stats.ic_sum += stats.ic_last;
-    stats.dma_errors += dma_error ? 1U : 0U;
+    stats.ia_sum += sample.ia_code;
+    stats.ic_sum += sample.ic_code;
     stats.adc_overruns += overrun ? 1U : 0U;
-    /* The new CCR1 waits in the preload register until the next update event. */
-    switch (atomic_get(&mode)) {
-        case PWM_MODE_CH3_25:
-            LL_TIM_OC_SetCompareCH3(TIM1, CCR_DUTY_25);
-            break;
-        case PWM_MODE_CH3_50:
-            LL_TIM_OC_SetCompareCH3(TIM1, CCR_DUTY_50);
-            break;
-        case PWM_MODE_CH3_75:
-            LL_TIM_OC_SetCompareCH3(TIM1, CCR_DUTY_75);
-            break;
-        default:
-            ch3_high_duty = !ch3_high_duty;
-            LL_TIM_OC_SetCompareCH3(TIM1, ch3_high_duty ? CCR_DUTY_75 : CCR_DUTY_25);
-            break;
+
+    if (test_spin_count > 0U) {
+        test_spin_count = test_spin_count - 1U;
+        while (cycles_now() - entry < test_spin_cycles) {}
     }
 
-    stats.exec_max = MAX(stats.exec_max, cycles_now() - entry);
+    uint32_t exec = cycles_now() - entry;
+
+    stats.exec_max = MAX(stats.exec_max, exec);
+    if (exec > PWM_ADC_EXEC_BUDGET) {
+        stats.overruns++;
+        overruns_in_a_row++;
+        if (overruns_in_a_row >= PWM_ADC_OVERRUN_FAULT_COUNT) {
+            fault_latch(PWM_ADC_FAULT_OVERRUN);
+        }
+    } else {
+        overruns_in_a_row = 0U;
+    }
+    /* The next [IA, IC] already arrived: this ISR ran past the next counter top. */
+    if (LL_DMA_IsActiveFlag_TC1(DMA2) != 0U) {
+        stats.missed++;
+    }
     (void)atomic_inc(&seq);
     return 0; /* no reschedule: required for a zero-latency ISR */
 }
@@ -207,16 +258,22 @@ static void tim1_setup(void) {
     LL_TIM_SetCounterMode(TIM1, LL_TIM_COUNTERMODE_CENTER_UP);
     LL_TIM_SetAutoReload(TIM1, PWM_ARR);
     LL_TIM_EnableARRPreload(TIM1);
-    LL_TIM_SetRepetitionCounter(TIM1, 0U);
+    /*
+     * RCR 1, loaded by the UG below before the counter starts: one update
+     * event per period, at the top, where all high sides are off (stage 4
+     * scope check, mode 5). RCR 0 would add an update at the bottom that
+     * splits a high-side pulse between the old and the new duty.
+     */
+    LL_TIM_SetRepetitionCounter(TIM1, 1U);
 
     static const uint32_t channels[] = {LL_TIM_CHANNEL_CH1, LL_TIM_CHANNEL_CH2, LL_TIM_CHANNEL_CH3};
     for (size_t i = 0; i < ARRAY_SIZE(channels); i++) {
         LL_TIM_OC_SetMode(TIM1, channels[i], LL_TIM_OCMODE_PWM1);
         LL_TIM_OC_EnablePreload(TIM1, channels[i]);
     }
-    LL_TIM_OC_SetCompareCH1(TIM1, CCR_DUTY_25);
+    LL_TIM_OC_SetCompareCH1(TIM1, CCR_DUTY_50);
     LL_TIM_OC_SetCompareCH2(TIM1, CCR_DUTY_50);
-    LL_TIM_OC_SetCompareCH3(TIM1, CCR_DUTY_75);
+    LL_TIM_OC_SetCompareCH3(TIM1, CCR_DUTY_50);
 
     /* CH4 is internal only: PWM2 makes OC4REF rise when CNT reaches CCR4 near the top. */
     LL_TIM_OC_SetMode(TIM1, LL_TIM_CHANNEL_CH4, LL_TIM_OCMODE_PWM2);
@@ -298,16 +355,12 @@ void pwm_adc_stop(void) {
     LL_TIM_DisableCounter(TIM1);
 }
 
-void pwm_adc_set_mode(pwm_mode_t new_mode) {
-    LL_TIM_DisableCounter(TIM1);
-    (void)atomic_set(&mode, new_mode);
-    LL_TIM_SetRepetitionCounter(TIM1, (new_mode == PWM_MODE_ALT_RCR1) ? 1U : 0U);
-    LL_TIM_SetCounter(TIM1, 0U);
-    LL_TIM_GenerateEvent_UPDATE(TIM1);
-    LL_TIM_EnableCounter(TIM1);
-}
+int pwm_adc_init(pwm_adc_step_fn step) {
+    if (step == NULL) {
+        return -EINVAL;
+    }
+    step_fn = step;
 
-int pwm_adc_init(void) {
     int ret = clocks_on();
 
     if (ret < 0) {
@@ -326,6 +379,9 @@ int pwm_adc_init(void) {
     dma2_setup();
 
     stats_reset_locked();
+    stats.ccr[0] = CCR_DUTY_50;
+    stats.ccr[1] = CCR_DUTY_50;
+    stats.ccr[2] = CCR_DUTY_50;
     IRQ_DIRECT_CONNECT(DMA2_Channel1_IRQn, DMA_IRQ_PRIORITY, dma_isr, IRQ_ZERO_LATENCY);
     irq_enable(DMA2_Channel1_IRQn);
 

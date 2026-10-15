@@ -5,22 +5,18 @@
 #include <zephyr/devicetree.h>
 
 /* Board constants from DOC-MAIN-SCH. */
-#define SHUNT_GAIN_MA_PER_V 20000 /* 1 / (5 mOhm * gain 10) = 20 A/V */
-#define VBUS_DIV_TOP_OHM    100000
-#define VBUS_DIV_BOT_OHM    4700
-#define NTC_PULLUP_OHM      10000
-
-/* VREF+ = VDDA = the board 3.3 V rail; the binding default is 3300. */
-#define VDDA_MV             DT_PROP(DT_NODELABEL(adc2), vref_mv)
+#define VBUS_DIV_TOP_OHM 100000
+#define VBUS_DIV_BOT_OHM 4700
+#define NTC_PULLUP_OHM   10000
 
 int32_t analog_code_x100_to_mv(int32_t code_x100) {
-    int64_t num = (int64_t)code_x100 * VDDA_MV;
+    int64_t num = (int64_t)code_x100 * ANALOG_VDDA_MV;
 
     return (int32_t)(num / (100LL * ANALOG_FULL_SCALE));
 }
 
 int32_t analog_phase_current_ma(int32_t code_x100, int32_t offset_x100) {
-    int64_t num = (int64_t)(code_x100 - offset_x100) * VDDA_MV * SHUNT_GAIN_MA_PER_V;
+    int64_t num = (int64_t)(code_x100 - offset_x100) * ANALOG_VDDA_MV * ANALOG_SHUNT_MA_PER_V;
 
     /* mV * (mA/V) / 1000 = mA */
     return (int32_t)(num / (100LL * ANALOG_FULL_SCALE * 1000));

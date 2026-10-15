@@ -19,7 +19,8 @@ enable_testing()
 add_library(foc STATIC
   ${FOC_DIR}/src/foc_transform.c
   ${FOC_DIR}/src/foc_pi.c
-  ${FOC_DIR}/src/foc_svpwm.c)
+  ${FOC_DIR}/src/foc_svpwm.c
+  ${FOC_DIR}/src/foc_current.c)
 target_include_directories(foc PUBLIC ${FOC_DIR}/include)
 target_compile_features(foc PUBLIC c_std_11)
 # double math is software-emulated on the single-precision M4F FPU.
@@ -47,6 +48,7 @@ foc_host_executable(foc_host_smoke smoke.c)
 foc_host_executable(test_transform test_transform.c)
 foc_host_executable(test_pi test_pi.c)
 foc_host_executable(test_svpwm test_svpwm.c)
+foc_host_executable(test_current test_current.c)
 foc_host_executable(sim_current_loop sim/sim_current_loop.c)
 foc_host_executable(sim_svpwm sim/sim_svpwm.c)
 foc_host_executable(sim_speed_loop sim/sim_speed_loop.c)
@@ -55,6 +57,7 @@ target_link_libraries(vec_compare PRIVATE foc_vectors)
 
 foc_host_test(foc_host_smoke)
 foc_host_test(test_transform)
+foc_host_test(test_current)
 add_test(NAME vec_compare_selftest COMMAND vec_compare --selftest)
 set_tests_properties(vec_compare_selftest PROPERTIES ENVIRONMENT "ASAN_OPTIONS=detect_leaks=0")
 if(FOC_EXERCISES)
