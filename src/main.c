@@ -90,12 +90,14 @@ static __noinline void report(uint32_t n, const pwm_adc_stats_t* st, bool timing
 }
 
 static const char* const mode_names[] = {
-    [PWM_MODE_FIXED] = "1: CH1-3 fixed 25/50/75 %, RCR 0",
-    [PWM_MODE_ALT_RCR0] = "2: CH1 alternates 25/75 % per period, RCR 0",
-    [PWM_MODE_ALT_RCR1] = "3: CH1 alternates 25/75 % per period, RCR 1",
+    [PWM_MODE_CH3_25] = "1: CH3 25 % (CH3N on PB9 75 %), RCR 0",
+    [PWM_MODE_CH3_50] = "2: CH3 50 % (CH3N 50 %), RCR 0",
+    [PWM_MODE_CH3_75] = "3: CH3 75 % (CH3N 25 %), RCR 0",
+    [PWM_MODE_ALT_RCR0] = "4: CH3 alternates 25/75 % per period, RCR 0",
+    [PWM_MODE_ALT_RCR1] = "5: CH3 alternates 25/75 % per period, RCR 1",
 };
 
-/* A key '1'-'3' on the console UART selects the scope test mode. */
+/* A key '1'-'5' on the console UART selects the scope test mode. */
 static void poll_mode_key(const struct device* uart) {
     unsigned char c;
 
@@ -137,7 +139,7 @@ static void report_loop(void* p1, void* p2, void* p3) {
 int main(void) {
     int ret = encoder_init();
 
-    LOG_INF("Stage 4 scope build; TIM1 CH1-3 on PA8-PA10 only, PC0-PC3 analog, ISR marker PB9; SD1-SD4 low");
+    LOG_INF("Stage 4 scope build; TIM1 CH1-3 on PA8-PA10, CH3N on PB9 (U7-4), PC0-PC3 analog; SD1-SD4 low");
     if (ret < 0) {
         LOG_ERR("encoder_init failed: %d", ret);
         return 0;
@@ -148,7 +150,7 @@ int main(void) {
         return 0;
     }
     LOG_INF("TIM1 ARR %u (20 kHz center-aligned), ADC2 [IA, IC] on TRGO2 at the top; mode %s", PWM_ARR,
-            mode_names[PWM_MODE_FIXED]);
+            mode_names[PWM_MODE_CH3_25]);
 
     (void)k_thread_create(&report_thread, report_stack, K_THREAD_STACK_SIZEOF(report_stack), report_loop, NULL, NULL,
                           NULL, REPORT_PRIORITY, 0, K_NO_WAIT);

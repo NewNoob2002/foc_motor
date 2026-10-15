@@ -8,9 +8,10 @@
  * PC0-PC3 (the gate-driver IN pins) always stay in analog mode: with no
  * DCBUS the EG2104 VCC is 0 V and IN must stay below VCC + 0.3 V
  * (DOC-GATE-DS 7.1, HW-PWM-009). For scope checks CH1-3 come out only on
- * the unconnected probe pins PA8/PA9/PA10 (user-approved 2026-10-14), and
- * PB9 (U7-4) is high while the ISR runs. pwm_adc_outputs_safe() checks the
- * invariant; pwm_adc_init() refuses to start without it.
+ * the unconnected pins PA8/PA9/PA10, and CH3N (CH3 inverted) on PB9 at the
+ * U7-4 header, the one probe-able pin (both user-approved 2026-10-14).
+ * pwm_adc_outputs_safe() checks the invariant; pwm_adc_init() refuses to
+ * start without it.
  */
 
 #ifndef FOC_MOTOR_PWM_ADC_H
@@ -39,14 +40,19 @@ typedef struct {
     uint32_t adc_overruns;
 } pwm_adc_stats_t;
 
-/* Stage 4 scope test modes, applied to CH1 only. */
+/*
+ * Stage 4 scope test modes, applied to CH3 (seen inverted as CH3N on PB9);
+ * CH1 and CH2 stay at 25 / 50 %.
+ */
 typedef enum {
-    PWM_MODE_FIXED,    /* CH1-3 at 25 / 50 / 75 %, updates at top and bottom (RCR 0) */
-    PWM_MODE_ALT_RCR0, /* CH1 alternates 25 / 75 % every period; updates at top and bottom */
+    PWM_MODE_CH3_25,   /* CH3 25 %, CH3N 75 %; updates at top and bottom (RCR 0) */
+    PWM_MODE_CH3_50,   /* CH3 50 % */
+    PWM_MODE_CH3_75,   /* CH3 75 %, CH3N 25 % */
+    PWM_MODE_ALT_RCR0, /* CH3 alternates 25 / 75 % every period; updates at top and bottom */
     PWM_MODE_ALT_RCR1, /* the same, but one update per period (RCR 1) */
 } pwm_mode_t;
 
-/* Starts TIM1 (CH1-3 on PA8-PA10 only), ADC2 and DMA. Returns 0 or -errno. */
+/* Starts TIM1 (CH1-3 on PA8-PA10, CH3N on PB9 only), ADC2 and DMA. Returns 0 or -errno. */
 int pwm_adc_init(void);
 
 /*
@@ -57,9 +63,9 @@ int pwm_adc_init(void);
 void pwm_adc_set_mode(pwm_mode_t mode);
 
 /*
- * True while PC0-PC3 are analog, CH4 and the complementary outputs are off
- * and CH1-3 can reach only PA8-PA10. If not, the caller must call
- * pwm_adc_stop().
+ * True while PC0-PC3 are analog, CH4, CH1N and CH2N are off (CH2N could
+ * reach PB0 = SD1) and only CH1-3 and CH3N are enabled. If not, the caller
+ * must call pwm_adc_stop().
  */
 bool pwm_adc_outputs_safe(void);
 

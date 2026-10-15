@@ -91,6 +91,10 @@ The user now has an oscilloscope (ALIENTEK DS100 Mini, one probe) and approved T
 
 PA8–PA10 float (J-Link, firmware `1d39b8c` running): switched from analog to input, pull-up → all three read 1 in 20/20 samples; pull-down → 0 in 20/20. Nothing on the board drives them, consistent with the schematic's no-connect marks. Restored afterwards to analog, no pull (`MODER = 0xABFFFFD5`, `PUPDR = 0x64000000`); SD outputs stayed low (`ODR` A = 0).
 
+Scope build `85267e7` / `e57ca62` (2026-10-15): CH1–3 on PA8–PA10 and an ISR marker on PB9. Read-back on the board: PC0–PC3 analog, `CCER = 0x111`, MOE on; `85267e7` left PA9/PA10 analog because `LL_GPIO_SetPinMode/Speed/Pull` act on one pin (`POSITION_VAL`), fixed in `e57ca62` (`GPIOA MODER = 0xABEAFFD5`). User measurement on PB9 (ISR marker): **20 kHz, mean high time 940 ns** (the typical ISR time; the firmware reports the maximum per second, about 2.7 µs). The user then found PA8–PA10 too fine to probe.
+
+Route change (user-approved 2026-10-15): TIM1 CH3N (AF12) on **PB9 at the U7-4 header**, replacing the ISR marker; the test patterns move to CH3 (CH1/CH2 fixed at 25 / 50 %). CCER may hold only CC1E–CC3E and CC3NE. Modes by UART key: 1 / 2 / 3 = CH3 at 25 / 50 / 75 % (CH3N 75 / 50 / 25 %), 4 = CH3 alternating 25 / 75 % per period with RCR 0, 5 = the same with RCR 1. What the probe on CH3N shows: frequency and (inverted) duty; center alignment (with alternating 25 / 75 % pulses centered on the period, the time between successive rising edges alternates 37.5 / 62.5 µs instead of a constant 50 µs); and the update event (RCR 1: each value applies to a whole period; RCR 0: the value written after the top loads at the bottom, mid-pulse).
+
 ## Done when (roadmap, revised 2026-10-14)
 
 | Criterion | Result |
