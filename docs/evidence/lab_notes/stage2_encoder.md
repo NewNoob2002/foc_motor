@@ -1,6 +1,6 @@
 # Stage 2 — Read the encoder by hand
 
-Status: **in progress** (started 2026-10-14). Done so far: connector pinouts and the harness plan, two supply measurements, harness built and checked (user report), firmware built (not flashed). Next: flash backup, flash, turn the shaft.
+Status: **in progress** (started 2026-10-14). Done so far: connector pinouts and the harness plan, two supply measurements, harness built and checked (user report), firmware built (not flashed). Flashed (run 1): A/B counting works; Z is open at PB9. Next: fix Z, then the marked-turn checks.
 
 ## Setup
 
@@ -82,6 +82,24 @@ Build (2026-10-14, Zephyr v4.4.2, SDK 1.0.1, `west build -p always -b foc_motor 
    - Z: one Z line per turn, always the same `mech` count in the same direction. In the other direction the rising edge comes from the other side of the Z pulse, so `mech` can differ by the Z width; that is expected.
    - After 10+ turns back and forth, return to the start mark: `mech` is where it started and the Z `mech` has not drifted.
    - `theta_e` goes around 7 times per turn.
+
+## Run 1 (2026-10-14, 18:52–19:05)
+
+Raw files in `build/hil/stage2/flash/` (not committed: `preflash.bin`, `postflash.bin`, `uart_run1.log`, J-Link scripts and logs).
+
+| Step | Result |
+|---|---|
+| Board identity | UID `001D0050 42535013 20363130`, J-Link S/N 63728769, VTref 3.367 V; bench as stage 1 (J-Link 3.3 V only, no DCBUS/USB) |
+| Backup | `preflash.bin`, 128 KiB, SHA-256 `522685edcce6fc7e4e46740dd3c2be7b106ad53aa30e75baed40c39fa70dba21`. The first 36,916 B match the UART3 `zephyr.bin` (`d1551241…`); the rest still holds 51,372 non-erased bytes from older firmware |
+| Flash | Commit `44124b6`, `zephyr.hex` SHA-256 `817117fa…`, `zephyr.bin` `5088e961…`; J-Link `loadfile` + `verifybin` OK (38,912 B programmed) |
+| Registers after start | SD1–SD4 outputs low (`ODR` A/B = 0); TIM1 not clocked (`APB2ENR = 1`); TIM3 `CR1 = 0x11`, `SMCR = 3`, `ARR = 0xEFFF`; PB4/PB5 AF, PB9 input |
+| UART | Boots and prints at 10 Hz. At rest the count dithers by one count across an edge (`cnt 0` ↔ `61439`, shown as `pos -1 turn -1 mech 4095`: the wrap handling works) |
+| Turning (free-form, the user turned and stopped several times) | `pos` followed the shaft from 0 to +30,147 (7.4 turns net) with steps back; the one-count dither at rest is the only noise seen |
+| Z | **0 events** in the whole run (`z_events` read over J-Link = 0, EXTI 9 → port B, rising edge, NVIC enabled). PB9 reads high in 400/400 fast samples at rest at `mech` 1475; with the PB9 pull-up switched to pull-down it reads low 50/50. **Nothing drives PB9: the Z line is open** between KTH7823 U1-3 → CN2-4 and U7-4 |
+
+Not yet checked: 4096 counts per turn and the direction sign (both need a marked turn or a working Z).
+
+Earlier J-Link GPIO sampling (`build/hil/stage2/*.jlink`, 04:12–04:21, before this firmware) saw PB9 toggle, so Z may have worked then; it is not driven now.
 
 ## Done when (roadmap)
 
