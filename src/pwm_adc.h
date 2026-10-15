@@ -5,10 +5,12 @@
  * DMA2 channel 1 moving both results, and the DMA transfer-complete ISR
  * (the future FOC ISR, docs/design/zephyr_architecture.md 2.3).
  *
- * Stage 4 runs TIM1 with every output disabled (CCER = 0, MOE = 0) and
- * PC0-PC3 left in analog mode: with no DCBUS the EG2104 VCC is 0 V and
- * its IN pin must stay below VCC + 0.3 V (DOC-GATE-DS 7.1, HW-PWM-009).
- * pwm_adc_init() checks this and refuses to start otherwise.
+ * PC0-PC3 (the gate-driver IN pins) always stay in analog mode: with no
+ * DCBUS the EG2104 VCC is 0 V and IN must stay below VCC + 0.3 V
+ * (DOC-GATE-DS 7.1, HW-PWM-009). For scope checks CH1-3 come out only on
+ * the unconnected probe pins PA8/PA9/PA10 (user-approved 2026-10-14), and
+ * PB9 (U7-4) is high while the ISR runs. pwm_adc_outputs_safe() checks the
+ * invariant; pwm_adc_init() refuses to start without it.
  */
 
 #ifndef FOC_MOTOR_PWM_ADC_H
@@ -37,8 +39,32 @@ typedef struct {
     uint32_t adc_overruns;
 } pwm_adc_stats_t;
 
-/* Starts TIM1 (outputs off), ADC2 and DMA. Returns 0 or -errno. */
+/* Stage 4 scope test modes, applied to CH1 only. */
+typedef enum {
+    PWM_MODE_FIXED,    /* CH1-3 at 25 / 50 / 75 %, updates at top and bottom (RCR 0) */
+    PWM_MODE_ALT_RCR0, /* CH1 alternates 25 / 75 % every period; updates at top and bottom */
+    PWM_MODE_ALT_RCR1, /* the same, but one update per period (RCR 1) */
+} pwm_mode_t;
+
+/* Starts TIM1 (CH1-3 on PA8-PA10 only), ADC2 and DMA. Returns 0 or -errno. */
 int pwm_adc_init(void);
+
+/*
+ * Selects a test mode. Restarts the counter so the repetition counter starts
+ * in a known phase (RM0440: RCR loaded by UG before the counter starts).
+ * Thread context only.
+ */
+void pwm_adc_set_mode(pwm_mode_t mode);
+
+/*
+ * True while PC0-PC3 are analog, CH4 and the complementary outputs are off
+ * and CH1-3 can reach only PA8-PA10. If not, the caller must call
+ * pwm_adc_stop().
+ */
+bool pwm_adc_outputs_safe(void);
+
+/* Disables all TIM1 outputs (MOE = 0) and stops the counter. */
+void pwm_adc_stop(void);
 
 /*
  * Copies the current window and asks the ISR to start a new one at its next

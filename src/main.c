@@ -7,6 +7,7 @@
 #include <zephyr/devicetree.h>
 #include <zephyr/devicetree/dma.h>
 #include <zephyr/devicetree/gpio.h>
+#include <zephyr/drivers/uart.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/util.h>
@@ -88,17 +89,45 @@ static __noinline void report(uint32_t n, const pwm_adc_stats_t* st, bool timing
             encoder_count() % ENCODER_COUNTS_PER_REV);
 }
 
+static const char* const mode_names[] = {
+    [PWM_MODE_FIXED] = "1: CH1-3 fixed 25/50/75 %, RCR 0",
+    [PWM_MODE_ALT_RCR0] = "2: CH1 alternates 25/75 % per period, RCR 0",
+    [PWM_MODE_ALT_RCR1] = "3: CH1 alternates 25/75 % per period, RCR 1",
+};
+
+/* A key '1'-'3' on the console UART selects the scope test mode. */
+static void poll_mode_key(const struct device* uart) {
+    unsigned char c;
+
+    while (uart_poll_in(uart, &c) == 0) {
+        if (c >= '1' && c < (unsigned char)('1' + ARRAY_SIZE(mode_names))) {
+            pwm_mode_t m = (pwm_mode_t)(c - '1');
+
+            pwm_adc_set_mode(m);
+            LOG_INF("mode %s", mode_names[m]);
+        }
+    }
+}
+
 static void report_loop(void* p1, void* p2, void* p3) {
     ARG_UNUSED(p1);
     ARG_UNUSED(p2);
     ARG_UNUSED(p3);
 
+    const struct device* const uart = DEVICE_DT_GET(DT_CHOSEN(zephyr_console));
     pwm_adc_stats_t st;
 
     /* Drop the start-up window. */
     (void)pwm_adc_stats_take(&st);
     for (uint32_t n = 1;; n++) {
         k_msleep(REPORT_PERIOD_MS);
+        if (!pwm_adc_outputs_safe()) {
+            pwm_adc_stop();
+            LOG_ERR("TIM1 output invariant broken (PC0-PC3 or CCER); outputs off, timer stopped");
+            return;
+        }
+        poll_mode_key(uart);
+
         bool timing_valid = pwm_adc_stats_take(&st);
 
         report(n, &st, timing_valid);
@@ -108,7 +137,7 @@ static void report_loop(void* p1, void* p2, void* p3) {
 int main(void) {
     int ret = encoder_init();
 
-    LOG_INF("Stage 4 PWM timebase; TIM1 outputs off, PC0-PC3 analog; SD1-SD4 low; USART3 DMA TX 921600");
+    LOG_INF("Stage 4 scope build; TIM1 CH1-3 on PA8-PA10 only, PC0-PC3 analog, ISR marker PB9; SD1-SD4 low");
     if (ret < 0) {
         LOG_ERR("encoder_init failed: %d", ret);
         return 0;
@@ -118,7 +147,8 @@ int main(void) {
         LOG_ERR("pwm_adc_init failed: %d", ret);
         return 0;
     }
-    LOG_INF("TIM1 ARR %u (20 kHz center-aligned), CCR1-3 25/50/75 %%, ADC2 [IA, IC] on TRGO2 at the top", PWM_ARR);
+    LOG_INF("TIM1 ARR %u (20 kHz center-aligned), ADC2 [IA, IC] on TRGO2 at the top; mode %s", PWM_ARR,
+            mode_names[PWM_MODE_FIXED]);
 
     (void)k_thread_create(&report_thread, report_stack, K_THREAD_STACK_SIZEOF(report_stack), report_loop, NULL, NULL,
                           NULL, REPORT_PRIORITY, 0, K_NO_WAIT);

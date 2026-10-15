@@ -56,6 +56,18 @@ BUILD_ASSERT(DT_REG_ADDR(TIM1_NODE) == TIM1_BASE && DT_REG_ADDR(ADC2_NODE) == AD
 /* PC0-PC3 (PWMA-D) must stay analog: MODER bits 0-7 all set. */
 #define GPIOC_PWM_PINS_ANALOG 0xFFU
 
+/*
+ * Scope probe pins: TIM1 CH1-3 on PA8/PA9/PA10 (AF6, LQFP 41-43, not
+ * connected on this board; checked floating 2026-10-14) and the ISR marker
+ * on PB9 (U7-4).
+ */
+#define PROBE_PINS            (LL_GPIO_PIN_8 | LL_GPIO_PIN_9 | LL_GPIO_PIN_10)
+#define PROBE_AF              LL_GPIO_AF_6
+#define ISR_MARK_PIN          LL_GPIO_PIN_9
+
+/* Only CC1E, CC2E, CC3E may be set: no complementary outputs, no CH4 pin. */
+#define CCER_ALLOWED          (TIM_CCER_CC1E | TIM_CCER_CC2E | TIM_CCER_CC3E)
+
 static volatile uint16_t adc_buf[2];
 
 /*
@@ -67,6 +79,10 @@ static atomic_t seq;
 static atomic_t reset_req;
 static uint32_t last_entry;
 static bool have_last_entry;
+
+/* Written by the thread (pwm_adc_set_mode), read by the ISR. */
+static atomic_t mode = PWM_MODE_FIXED;
+static bool ch1_high_duty;
 
 static void stats_reset_locked(void) {
     uint32_t dma_errors = stats.dma_errors;
@@ -82,6 +98,8 @@ static void stats_reset_locked(void) {
 
 ISR_DIRECT_DECLARE(dma_isr) {
     uint32_t entry = DWT->CYCCNT;
+
+    LL_GPIO_SetOutputPin(GPIOB, ISR_MARK_PIN);
     uint16_t cnt = (uint16_t)LL_TIM_GetCounter(TIM1);
     bool up = LL_TIM_GetDirection(TIM1) == LL_TIM_COUNTERDIRECTION_UP;
     bool dma_error = LL_DMA_IsActiveFlag_TE1(DMA2) != 0U;
@@ -115,8 +133,17 @@ ISR_DIRECT_DECLARE(dma_isr) {
     stats.ic_sum += stats.ic_last;
     stats.dma_errors += dma_error ? 1U : 0U;
     stats.adc_overruns += overrun ? 1U : 0U;
+    /* The new CCR1 waits in the preload register until the next update event. */
+    if (atomic_get(&mode) == PWM_MODE_FIXED) {
+        LL_TIM_OC_SetCompareCH1(TIM1, CCR_DUTY_25);
+    } else {
+        ch1_high_duty = !ch1_high_duty;
+        LL_TIM_OC_SetCompareCH1(TIM1, ch1_high_duty ? CCR_DUTY_75 : CCR_DUTY_25);
+    }
+
     stats.exec_max = MAX(stats.exec_max, DWT->CYCCNT - entry);
     (void)atomic_inc(&seq);
+    LL_GPIO_ResetOutputPin(GPIOB, ISR_MARK_PIN);
     return 0; /* no reschedule: required for a zero-latency ISR */
 }
 
@@ -152,7 +179,24 @@ static void dwt_start(void) {
     DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
 }
 
-/* Counter, compares and TRGO2 only; no output is enabled. */
+/* PA8-PA10 to TIM1 (AF6), PB9 as a push-pull output, low. PC0-PC3 untouched. */
+static void probe_pins_setup(void) {
+    LL_GPIO_SetPinOutputType(GPIOA, PROBE_PINS, LL_GPIO_OUTPUT_PUSHPULL);
+    LL_GPIO_SetPinSpeed(GPIOA, PROBE_PINS, LL_GPIO_SPEED_FREQ_LOW);
+    LL_GPIO_SetPinPull(GPIOA, PROBE_PINS, LL_GPIO_PULL_NO);
+    LL_GPIO_SetAFPin_8_15(GPIOA, LL_GPIO_PIN_8, PROBE_AF);
+    LL_GPIO_SetAFPin_8_15(GPIOA, LL_GPIO_PIN_9, PROBE_AF);
+    LL_GPIO_SetAFPin_8_15(GPIOA, LL_GPIO_PIN_10, PROBE_AF);
+    LL_GPIO_SetPinMode(GPIOA, PROBE_PINS, LL_GPIO_MODE_ALTERNATE);
+
+    LL_GPIO_ResetOutputPin(GPIOB, ISR_MARK_PIN);
+    LL_GPIO_SetPinOutputType(GPIOB, ISR_MARK_PIN, LL_GPIO_OUTPUT_PUSHPULL);
+    LL_GPIO_SetPinSpeed(GPIOB, ISR_MARK_PIN, LL_GPIO_SPEED_FREQ_LOW);
+    LL_GPIO_SetPinPull(GPIOB, ISR_MARK_PIN, LL_GPIO_PULL_NO);
+    LL_GPIO_SetPinMode(GPIOB, ISR_MARK_PIN, LL_GPIO_MODE_OUTPUT);
+}
+
+/* Counter, compares and TRGO2; outputs stay off until pwm_adc_init() checks the pins. */
 static void tim1_setup(void) {
     LL_TIM_DisableCounter(TIM1);
     LL_TIM_SetPrescaler(TIM1, 0U);
@@ -240,10 +284,23 @@ static void dma2_setup(void) {
     LL_DMA_EnableChannel(DMA2, LL_DMA_CHANNEL_1);
 }
 
-/* The Stage 4 safety condition, read back from the hardware. */
-static bool outputs_disabled(void) {
-    return LL_TIM_ReadReg(TIM1, CCER) == 0U && LL_TIM_IsEnabledAllOutputs(TIM1) == 0U
+bool pwm_adc_outputs_safe(void) {
+    return (LL_TIM_ReadReg(TIM1, CCER) & ~CCER_ALLOWED) == 0U
            && (LL_GPIO_ReadReg(GPIOC, MODER) & GPIOC_PWM_PINS_ANALOG) == GPIOC_PWM_PINS_ANALOG;
+}
+
+void pwm_adc_stop(void) {
+    LL_TIM_DisableAllOutputs(TIM1);
+    LL_TIM_DisableCounter(TIM1);
+}
+
+void pwm_adc_set_mode(pwm_mode_t new_mode) {
+    LL_TIM_DisableCounter(TIM1);
+    (void)atomic_set(&mode, new_mode);
+    LL_TIM_SetRepetitionCounter(TIM1, (new_mode == PWM_MODE_ALT_RCR1) ? 1U : 0U);
+    LL_TIM_SetCounter(TIM1, 0U);
+    LL_TIM_GenerateEvent_UPDATE(TIM1);
+    LL_TIM_EnableCounter(TIM1);
 }
 
 int pwm_adc_init(void) {
@@ -254,9 +311,10 @@ int pwm_adc_init(void) {
     }
     dwt_start();
     tim1_setup();
-    if (!outputs_disabled()) {
+    if (!pwm_adc_outputs_safe()) {
         return -EPERM;
     }
+    probe_pins_setup();
     ret = adc2_setup();
     if (ret < 0) {
         return ret;
@@ -269,12 +327,13 @@ int pwm_adc_init(void) {
 
     /* The ADC waits for TRGO2; the first trigger comes once the counter runs. */
     LL_ADC_REG_StartConversion(ADC2);
-    LL_TIM_EnableCounter(TIM1);
-
-    if (!outputs_disabled()) {
-        LL_TIM_DisableCounter(TIM1);
+    LL_TIM_CC_EnableChannel(TIM1, LL_TIM_CHANNEL_CH1 | LL_TIM_CHANNEL_CH2 | LL_TIM_CHANNEL_CH3);
+    if (!pwm_adc_outputs_safe()) {
+        pwm_adc_stop();
         return -EPERM;
     }
+    LL_TIM_EnableAllOutputs(TIM1);
+    LL_TIM_EnableCounter(TIM1);
     return 0;
 }
 

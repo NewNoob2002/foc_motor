@@ -85,6 +85,12 @@ Report 2 flagged the stopped DWT after the J-Link disconnect and restarted it; r
 
 Where the sample is: the trigger fires one TIM1 tick before the counter top; IA is sampled during the first 47.5 ADC cycles (1.1 µs) and IC 1.4 µs later; the ISR enters about 3.2 µs after the top, which matches trigger + 2 × (47.5 + 12.5) cycles at 42.5 MHz (2.8 µs) + DMA + interrupt entry. So the samples are taken at the top of the period, where the low sides would conduct. The IA–IC time skew (1.4 µs) is part of the phase-error budget for later.
 
+## Waveform preparation (2026-10-14)
+
+The user now has an oscilloscope (ALIENTEK DS100 Mini, one probe) and approved TIM1 CH1–3 on the unconnected pins PA8/PA9/PA10 (LQFP pins 41–43) for the deferred waveform checks. R-18 was captured first (`r18_boot_capture.md`, pass).
+
+PA8–PA10 float (J-Link, firmware `1d39b8c` running): switched from analog to input, pull-up → all three read 1 in 20/20 samples; pull-down → 0 in 20/20. Nothing on the board drives them, consistent with the schematic's no-connect marks. Restored afterwards to analog, no pull (`MODER = 0xABFFFFD5`, `PUPDR = 0x64000000`); SD outputs stayed low (`ODR` A = 0).
+
 ## Done when (roadmap, revised 2026-10-14)
 
 | Criterion | Result |
