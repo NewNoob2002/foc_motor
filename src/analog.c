@@ -25,6 +25,13 @@ static const struct adc_dt_spec channels[ANALOG_CH_COUNT] = {
 
 static const char* const names[ANALOG_CH_COUNT] = {"IA", "IC", "VBUS", "TEMP"};
 
+/*
+ * All channels use ADC_REF_INTERNAL = VREF+ = VDDA. adc_dt_spec.vref_mv is
+ * only set when a channel has zephyr,vref-mv, so take it from the driver
+ * (the ADC node's vref-mv, default 3300).
+ */
+static int32_t vdda_mv;
+
 BUILD_ASSERT(DT_REG_ADDR(DT_IO_CHANNELS_CTLR_BY_NAME(ANALOG_USER_NODE, ia)) == ADC2_BASE, "IA must be on ADC2");
 
 int analog_init(void) {
@@ -37,7 +44,8 @@ int analog_init(void) {
             return ret;
         }
     }
-    return 0;
+    vdda_mv = adc_ref_internal(channels[0].dev);
+    return (vdda_mv > 0) ? 0 : -EINVAL;
 }
 
 int analog_read(analog_channel_t ch, uint16_t* code) {
@@ -67,14 +75,13 @@ const char* analog_name(analog_channel_t ch) {
 }
 
 int32_t analog_code_x100_to_mv(int32_t code_x100) {
-    /* All channels share VDDA; vref_mv comes from the ADC node (default 3300). */
-    int64_t num = (int64_t)code_x100 * channels[ANALOG_CH_IA].vref_mv;
+    int64_t num = (int64_t)code_x100 * vdda_mv;
 
     return (int32_t)(num / (100LL * ANALOG_FULL_SCALE));
 }
 
 int32_t analog_phase_current_ma(int32_t code_x100, int32_t offset_x100) {
-    int64_t num = (int64_t)(code_x100 - offset_x100) * channels[ANALOG_CH_IA].vref_mv * SHUNT_GAIN_MA_PER_V;
+    int64_t num = (int64_t)(code_x100 - offset_x100) * vdda_mv * SHUNT_GAIN_MA_PER_V;
 
     /* mV * (mA/V) / 1000 = mA */
     return (int32_t)(num / (100LL * ANALOG_FULL_SCALE * 1000));
