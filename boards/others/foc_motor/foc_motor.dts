@@ -3,6 +3,7 @@
 /dts-v1/;
 #include <st/g4/stm32g431Xb.dtsi>
 #include <st/g4/stm32g431r(6-8-b)tx-pinctrl.dtsi>
+#include <zephyr/dt-bindings/adc/adc.h>
 #include <zephyr/dt-bindings/dma/stm32_dma.h>
 #include <zephyr/dt-bindings/gpio/gpio.h>
 
@@ -24,6 +25,9 @@
 	 */
 	zephyr,user {
 		encoder-z-gpios = <&gpiob 3 (GPIO_ACTIVE_HIGH | GPIO_PULL_UP)>;
+		/* HW-ADC-001/002/006, schematic R36/R38: all four on ADC2. */
+		io-channels = <&adc2 3>, <&adc2 17>, <&adc2 11>, <&adc2 15>;
+		io-channel-names = "ia", "ic", "vbus", "temp";
 	};
 };
 
@@ -123,6 +127,57 @@
 		st,input-filter-level = <3>;
 		st,counts-per-revolution = <4096>;
 		status = "okay";
+	};
+};
+
+/*
+ * ADC2 clock: HCLK 170 MHz / 4 = 42.5 MHz (G4 limit 60 MHz). The driver
+ * calibrates single-ended mode at boot. VDDA = VREF+ = the board 3.3 V rail.
+ */
+&adc2 {
+	pinctrl-0 = <&adc2_in3_pa6 &adc2_in17_pa4 &adc2_in11_pc5 &adc2_in15_pb15>;
+	pinctrl-names = "default";
+	st,adc-clock-source = "SYNC";
+	st,adc-prescaler = <4>;
+	interrupts = <18 5>;
+	#address-cells = <1>;
+	#size-cells = <0>;
+	status = "okay";
+
+	/* IA, PA6: COS722MR output behind 100 R / 100 pF, low source impedance. */
+	channel@3 {
+		reg = <3>;
+		zephyr,gain = "ADC_GAIN_1";
+		zephyr,reference = "ADC_REF_INTERNAL";
+		zephyr,acquisition-time = <ADC_ACQ_TIME(ADC_ACQ_TIME_TICKS, 48)>;
+		zephyr,resolution = <12>;
+	};
+
+	/* IC, PA4 (slow channel, unit address 0x11 = 17): same front end as IA. */
+	channel@11 {
+		reg = <17>;
+		zephyr,gain = "ADC_GAIN_1";
+		zephyr,reference = "ADC_REF_INTERNAL";
+		zephyr,acquisition-time = <ADC_ACQ_TIME(ADC_ACQ_TIME_TICKS, 48)>;
+		zephyr,resolution = <12>;
+	};
+
+	/* V_BUS, PC5: buffered 100k / 4.7k divider behind 100 R / 100 pF. */
+	channel@b {
+		reg = <11>;
+		zephyr,gain = "ADC_GAIN_1";
+		zephyr,reference = "ADC_REF_INTERNAL";
+		zephyr,acquisition-time = <ADC_ACQ_TIME(ADC_ACQ_TIME_TICKS, 48)>;
+		zephyr,resolution = <12>;
+	};
+
+	/* TEMP, PB15: 10k || NTC with no filter capacitor, so sample longer. */
+	channel@f {
+		reg = <15>;
+		zephyr,gain = "ADC_GAIN_1";
+		zephyr,reference = "ADC_REF_INTERNAL";
+		zephyr,acquisition-time = <ADC_ACQ_TIME(ADC_ACQ_TIME_TICKS, 248)>;
+		zephyr,resolution = <12>;
 	};
 };
 

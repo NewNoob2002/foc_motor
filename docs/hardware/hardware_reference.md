@@ -67,8 +67,12 @@
 | `HW-ADC-004` | `BEMF_B` | PA7 | ADC2_IN4 | 相电压诊断/扩展 |
 | `HW-ADC-005` | `BEMF_C` | PA5 | ADC2_IN13 | 相电压诊断/扩展 |
 | `HW-ADC-006` | `V_BUS` | PC5 | ADC2_IN11 | 100 kΩ / 4.7 kΩ 分压和滤波 |
+| `HW-ADC-011` | `TEMP` | PB15（U3 第 37 脚） | ADC2_IN15 | +3.3V → R38 10 kΩ/1% → TEMP → R36 NTC → DGND，无滤波电容；NTC 标称阻值和 B 值原理图未给出 |
+| `HW-ADC-012` | `ADC_IN` | PB2（U3 第 26 脚） | ADC2_IN12 | R11 5 kΩ 电位器滑动端，+3.3V 到 DGND；用户旋钮，未在固件中使用 |
 
-证据链：`DOC-MAIN-SCH` 的 R28/R29、U24/U25、IA/IC 网络和 U3 引脚；`DOC-MCU-DS` PDF p53 Table 12（PA6=ADC2_IN3、PA4=ADC2_IN17）。
+证据链：`DOC-MAIN-SCH` 的 R28/R29、U24/U25、IA/IC 网络和 U3 引脚；`DOC-MCU-DS` PDF p53 Table 12（PA6=ADC2_IN3、PA4=ADC2_IN17）。`HW-ADC-011/012`：2026-10-14 原理图 400 dpi 读图（U3 第 37/26 脚、R36/R38、R11，截图见 `docs/evidence/lab_notes/stage3/`），通道号取自固定 HAL pinctrl 文件 `stm32g431r(6-8-b)tx-pinctrl.dtsi`（`adc2_in15_pb15`、`adc2_in12_pb2`）。
+
+- `HW-ADC-013` — `CONFIRMED`：模拟前端细节（`DOC-MAIN-SCH` 读图）。IA/IC：COS722MR（U25）差分放大，输入 1 kΩ（R63/R54、R47/R43）、反馈 10 kΩ（R24/R25、R8/R16），增益 10，参考 `VREF1.65`；输出经 100 Ω（R57/R65）+ 100 pF（C25/C34）到 ADC。`VREF1.65`：+3.3V 经 R2/R3 10 kΩ/10 kΩ 分压，U24 B 路跟随，100 Ω（R6）+ 100 pF（C76）。V_BUS：DCBUS → R83 100 kΩ / R56 4.7 kΩ，U24 A 路跟随，100 Ω（R88）+ 100 pF（C77），系数 4.7/104.7 = 0.04489，ADC 满量程 3.3 V 对应约 73.5 V。IA/IC 偏置与 VDDA 同源（比例式），零电流码值理论为满量程一半。
 
 - `HW-ADC-007` — `CONFIRMED`：IA/IC 均属于 ADC2，不能构成双 ADC 同时采样。首版必须使用单次 TIM1 触发的固定 rank 序列 `[IA, IC]`，由 DMA 搬运两个 half-word。
 - `HW-ADC-008` — `CONFIRMED`：这是 A/C 两低侧分流；第三相需要由 `IA + IB + IC = 0` 重构。极端占空比和部分扇区存在不可观测窗口。
