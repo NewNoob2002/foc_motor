@@ -19,8 +19,8 @@
 
 /* Latest Z rising edge, written only by the Z interrupt. */
 typedef struct {
-	uint32_t events; /* Z edges since encoder_init() */
-	uint32_t count;  /* TIM3 count latched at the latest edge */
+    uint32_t events; /* Z edges since encoder_init() */
+    uint32_t count;  /* TIM3 count latched at the latest edge */
 } encoder_index_t;
 
 /* Checks the qdec device and enables the Z interrupt. Returns 0 or -errno. */
