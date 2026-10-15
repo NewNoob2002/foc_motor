@@ -17,9 +17,13 @@
 		zephyr,flash = &flash0;
 	};
 
-	/* HW-ENC-007 harness: encoder CN2-4 Z -> U7-4 PB9, rising edge once per turn. */
+	/*
+	 * HW-ENC-007 harness as built: encoder CN2-4 Z -> U7-3 PB3, rising edge
+	 * once per turn. PB3 is also TRACESWO; only SWD is used, so the SWO
+	 * trace output is unavailable while this pin is the Z input.
+	 */
 	zephyr,user {
-		encoder-z-gpios = <&gpiob 9 (GPIO_ACTIVE_HIGH | GPIO_PULL_UP)>;
+		encoder-z-gpios = <&gpiob 3 (GPIO_ACTIVE_HIGH | GPIO_PULL_UP)>;
 	};
 };
 

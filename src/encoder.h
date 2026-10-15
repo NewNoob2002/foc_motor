@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 
 /*
- * BSP: KTH7823 ABZ encoder on TIM3 (A/B, x4 quadrature) and PB9 (Z).
+ * BSP: KTH7823 ABZ encoder on TIM3 (A/B, x4 quadrature) and PB3 (Z).
  *
  * The Zephyr st,stm32-qdec driver configures TIM3 at boot; this module only
  * reads the counter register, so encoder_count() is safe in any context,
