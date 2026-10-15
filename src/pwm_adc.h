@@ -14,6 +14,7 @@
 #ifndef FOC_MOTOR_PWM_ADC_H
 #define FOC_MOTOR_PWM_ADC_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 /* 170 MHz / (2 * 4250) = 20 kHz, center-aligned. */
@@ -42,7 +43,10 @@ int pwm_adc_init(void);
 /*
  * Copies the current window and asks the ISR to start a new one at its next
  * entry. The copy is consistent: it retries if the ISR ran during it.
+ * Returns false if the DWT cycle counter had been stopped (a debugger
+ * disconnect does this); it is restarted, and the window's cycle figures
+ * (period, exec_max) are invalid.
  */
-void pwm_adc_stats_take(pwm_adc_stats_t* out);
+bool pwm_adc_stats_take(pwm_adc_stats_t* out);
 
 #endif /* FOC_MOTOR_PWM_ADC_H */

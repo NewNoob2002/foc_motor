@@ -59,7 +59,7 @@ static int32_t mean_x100(uint32_t sum, uint32_t n) {
 }
 
 /* Kept out of line so its log packages live on this frame, not report_loop's. */
-static __noinline void report(uint32_t n, const pwm_adc_stats_t* st) {
+static __noinline void report(uint32_t n, const pwm_adc_stats_t* st, bool timing_valid) {
     if (st->isr_count == 0U) {
         LOG_WRN("report %u: no ISR in this window; DMA errors %u, ADC overruns %u", n, st->dma_errors,
                 st->adc_overruns);
@@ -72,8 +72,13 @@ static __noinline void report(uint32_t n, const pwm_adc_stats_t* st) {
     int32_t ia = mean_x100(st->ia_sum, st->isr_count);
     int32_t ic = mean_x100(st->ic_sum, st->isr_count);
 
-    LOG_INF("report %u: %u ISR/s, period %u..%u cyc, exec max %u cyc", n, st->isr_count, st->period_min, st->period_max,
-            st->exec_max);
+    if (timing_valid) {
+        LOG_INF("report %u: %u ISR/s, period %u..%u cyc, exec max %u cyc", n, st->isr_count, st->period_min,
+                st->period_max, st->exec_max);
+    } else {
+        LOG_WRN("report %u: %u ISR/s, DWT was stopped (debugger?) and is restarted; cycle figures invalid", n,
+                st->isr_count);
+    }
     LOG_INF("  TIM1 CNT at ISR %u..%u (%u.%02u..%u.%02u us after top), counting up in %u", st->cnt_min, st->cnt_max,
             after_top_min / 100U, after_top_min % 100U, after_top_max / 100U, after_top_max % 100U, st->counting_up);
     LOG_INF("  IA mean %d.%02d (%+d mA vs mid-scale), IC mean %d.%02d (%+d mA)", ia / 100, ia % 100,
@@ -91,11 +96,12 @@ static void report_loop(void* p1, void* p2, void* p3) {
     pwm_adc_stats_t st;
 
     /* Drop the start-up window. */
-    pwm_adc_stats_take(&st);
+    (void)pwm_adc_stats_take(&st);
     for (uint32_t n = 1;; n++) {
         k_msleep(REPORT_PERIOD_MS);
-        pwm_adc_stats_take(&st);
-        report(n, &st);
+        bool timing_valid = pwm_adc_stats_take(&st);
+
+        report(n, &st, timing_valid);
     }
 }
 

@@ -38,8 +38,12 @@ BUILD_ASSERT(DT_REG_ADDR(TIM1_NODE) == TIM1_BASE && DT_REG_ADDR(ADC2_NODE) == AD
 #define ADC_CH_IA             LL_ADC_CHANNEL_3  /* PA6 */
 #define ADC_CH_IC             LL_ADC_CHANNEL_17 /* PA4 */
 
-/* DMA2 channel 1 is above every Zephyr driver IRQ (priority 5). */
-#define DMA_IRQ_PRIORITY      1
+/*
+ * Zero-latency: kernel critical sections (BASEPRI) do not mask it, so its
+ * entry time does not depend on what the threads are doing. It is the only
+ * one (AGENTS.md), and it must not call any kernel API.
+ */
+#define DMA_IRQ_PRIORITY      0
 
 /* ADC regular group start: OC4REF rises one tick before the counter top. */
 #define TRIGGER_CCR4          (PWM_ARR - 1U)
@@ -76,9 +80,7 @@ static void stats_reset_locked(void) {
     };
 }
 
-static void dma_isr(const void* arg) {
-    ARG_UNUSED(arg);
-
+ISR_DIRECT_DECLARE(dma_isr) {
     uint32_t entry = DWT->CYCCNT;
     uint16_t cnt = (uint16_t)LL_TIM_GetCounter(TIM1);
     bool up = LL_TIM_GetDirection(TIM1) == LL_TIM_COUNTERDIRECTION_UP;
@@ -115,6 +117,7 @@ static void dma_isr(const void* arg) {
     stats.adc_overruns += overrun ? 1U : 0U;
     stats.exec_max = MAX(stats.exec_max, DWT->CYCCNT - entry);
     (void)atomic_inc(&seq);
+    return 0; /* no reschedule: required for a zero-latency ISR */
 }
 
 static int clocks_on(void) {
@@ -138,6 +141,10 @@ static int clocks_on(void) {
         }
     }
     return 0;
+}
+
+static bool dwt_running(void) {
+    return (CoreDebug->DEMCR & CoreDebug_DEMCR_TRCENA_Msk) != 0U && (DWT->CTRL & DWT_CTRL_CYCCNTENA_Msk) != 0U;
 }
 
 static void dwt_start(void) {
@@ -257,7 +264,7 @@ int pwm_adc_init(void) {
     dma2_setup();
 
     stats_reset_locked();
-    IRQ_CONNECT(DMA2_Channel1_IRQn, DMA_IRQ_PRIORITY, dma_isr, NULL, 0);
+    IRQ_DIRECT_CONNECT(DMA2_Channel1_IRQn, DMA_IRQ_PRIORITY, dma_isr, IRQ_ZERO_LATENCY);
     irq_enable(DMA2_Channel1_IRQn);
 
     /* The ADC waits for TRGO2; the first trigger comes once the counter runs. */
@@ -271,8 +278,14 @@ int pwm_adc_init(void) {
     return 0;
 }
 
-void pwm_adc_stats_take(pwm_adc_stats_t* out) {
+bool pwm_adc_stats_take(pwm_adc_stats_t* out) {
     atomic_val_t before;
+    /* A J-Link disconnect clears TRCENA/CYCCNTENA (seen in stage 4 run 1). */
+    bool timing_valid = dwt_running();
+
+    if (!timing_valid) {
+        dwt_start();
+    }
 
     do {
         before = atomic_get(&seq);
@@ -280,4 +293,5 @@ void pwm_adc_stats_take(pwm_adc_stats_t* out) {
     } while (((uint32_t)before & 1U) != 0U || atomic_get(&seq) != before);
 
     (void)atomic_set(&reset_req, 1);
+    return timing_valid;
 }
