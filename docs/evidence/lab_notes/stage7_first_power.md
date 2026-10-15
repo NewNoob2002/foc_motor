@@ -1,6 +1,6 @@
 # Stage 7 — First power
 
-Status: **not entered** (2026-10-15). The firmware and the checks without DCBUS pass, and R-18 passes for this firmware (`r18_boot_capture.md`, run 2). Entering Stage 7 still needs the user's explicit go (`AGENTS.md`).
+Status: **entered 2026-10-15** on the user's explicit go ("confirm and go", recorded in `AGENTS.md`). The firmware and the checks without DCBUS pass, and R-18 passes for this firmware (`r18_boot_capture.md`, run 2).
 
 ## Decisions recorded before Stage 7
 
