@@ -9,6 +9,12 @@ with the electrical angle the firmware derived from the encoder. Over the
 whole log it unwraps both the mechanical count and the duty angle and prints
 their ratio (expected: 7 pole pairs).
 
+The unwrap needs less than half an electrical turn between rows (at 10 rows
+per second: less than 1/14 mechanical turn per row, about 0.7 turn/s). For a
+faster turn, the alias-free check is the per-row comparison of the duty angle
+with POLE_PAIRS x the logged mechanical count, together with how much of the
+mechanical circle the rows cover.
+
 Only voltage-mode rows count: the duty vector there is 1 V of the nominal
 12 V bus, 1/12 = 833 duty units (1/10000) long; rows of another length (the
 current loop, the 50 % calibration) are skipped. Optional step bounds select
@@ -22,6 +28,8 @@ import re
 import sys
 
 COUNTS = 4096
+POLE_PAIRS = 7
+COVER_BINS = 64  # mechanical circle split into 64 bins of 5.6 degrees
 VOLTAGE_MODE_LEN = 10000 / 12  # duty units
 LEN_TOL = 0.05
 ROT = re.compile(r"\brot (\d+) (\d+) (\d+) (\d+) (\d+) (\d+)")
@@ -63,6 +71,8 @@ def main(path, first=0, last=None):
         return 1
 
     max_err = 0.0
+    max_err_mech = 0.0
+    bins = set()
     mech_travel = 0
     elec_travel = 0.0
     max_elec_step = 0.0
@@ -71,6 +81,8 @@ def main(path, first=0, last=None):
         ang = duty_angle_counts(da, db, dc)
         err = abs(wrap(ang - theta_e))
         max_err = max(max_err, err)
+        max_err_mech = max(max_err_mech, abs(wrap(ang - (POLE_PAIRS * mech) % COUNTS)))
+        bins.add(mech * COVER_BINS // COUNTS)
         if prev is not None:
             mech_travel += wrap(mech - prev[0])
             d = wrap(ang - prev[1])
@@ -83,6 +95,8 @@ def main(path, first=0, last=None):
     print(f"{len(rows)} rot lines, steps {rows[0][0]}..{rows[-1][0]}")
     print(f"duty angle vs encoder electrical angle: max |error| {max_err:.2f} counts "
           f"({max_err * 360 / COUNTS:.3f} electrical deg)")
+    print(f"duty angle vs {POLE_PAIRS} x mechanical count: max |error| {max_err_mech:.2f} counts; "
+          f"{len({r[1] for r in rows})} distinct positions, {len(bins)} of {COVER_BINS} bins of the circle")
     print(f"mechanical travel {mech_travel:+d} counts = {mech_turns:+.3f} turns")
     print(f"duty-angle travel {elec_travel:+.0f} counts = {elec_turns:+.3f} electrical turns")
     if abs(mech_travel) > 0:

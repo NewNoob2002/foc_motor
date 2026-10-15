@@ -1,6 +1,6 @@
 # Stage 6 — The real FOC interrupt, without motor power
 
-Status: **in progress** (2026-10-15). Timing and overrun criteria pass on the board; the duty pattern follows the encoder angle at 7 electrical turns per mechanical turn with the encoder count **written by the debugger**. The hand-turn test (the user turning the shaft) was skipped in this session at the user's choice and is still open.
+Status: **all three "done when" criteria pass** (2026-10-15): the duty pattern follows the shaft at 7 electrical turns per mechanical turn (hand-turn with the real encoder, and a debugger-written sweep), the worst ISR is 13.8 µs with 0 overruns over 7.4 minutes, and forced overruns are detected. Recording Stage 6 as done needs the user's confirmation (`AGENTS.md`).
 
 ## What was built
 
@@ -13,7 +13,7 @@ Status: **in progress** (2026-10-15). Timing and overrun criteria pass on the bo
 | Overrun detection | `src/pwm_adc.c` | **Overrun:** ISR longer than 3400 cycles (20 µs, `AGENTS.md`). **Missed:** the next ADC result had already arrived when the ISR ended (DMA TC flag set again). Three overruns in a row, or a DMA error, latch a **fault**: MOE = 0, CCR1–3 = 50 %, no more control steps; the ISR keeps its statistics. The fault clears only by reset |
 | Forced overrun | `src/pwm_adc.c` | `test_spin_cycles`, `test_spin_count`: the debugger sets them; the next `count` ISRs busy-wait until `cycles` after entry. Both 0 in normal operation |
 | Telemetry | `src/main.c` | A `rot` line every 100 ms (step, mechanical count, electrical count, three duties in 1/10000) and a report every second (timing, counters, fault, CCRs, mode, offsets, i_d/i_q, v_d/v_q) |
-| Tools | `stage6/check_rotation.py`, `stage6/summarize.py` | Rebuild the voltage-vector angle from the three duties and compare it with 7 × the shaft angle; summarize the one-second reports |
+| Tools | `stage6/check_rotation.py`, `stage6/summarize.py` | Rebuild the voltage-vector angle from the three duties and compare it with 7 × the shaft angle per row (alias-free) and as an unwrapped ratio (slow turns only); summarize the one-second reports |
 
 The Stage 5 bench still runs at boot before the ISR starts.
 
@@ -28,7 +28,7 @@ The ISR call tree was checked in the disassembly: it calls only `lib/foc`, `sinf
 | Tools | Zephyr v4.4.2, SDK 1.0.1 (GCC 14.3.0, picolibc), `-Os`, FPU on; J-Link Commander V9.84, S/N 63728769, SWD 1 MHz |
 | Power | J-Link VTref 3.3 V only; no DCBUS, no USB. SD1–SD4 low (hogs), PC0–PC3 analog; TIM1 outputs only on PA8–PA10 (unconnected) and CH3N on PB9 (U7-4, nothing attached) |
 | UART | H2 → `/dev/ttyUSB0`, 921600 8N1 |
-| Raw files | `build/hil/stage6/` (not committed): binary/ELF, J-Link scripts and output, `uart_main.log` (one capture, split into `boot1.log` after the flash and `boot2.log` after a reset), `sweep_c.log` |
+| Raw files | `build/hil/stage6/` (not committed): binary/ELF, J-Link scripts and output, `uart_main.log` (one capture, split into `boot1.log` after the flash and `boot2.log` after a reset), `sweep_c.log`, `uart_handturn.log` (hand-turn, boot 2) |
 
 Mode and test inputs were set with J-Link writes (`foc_ctrl_mode` at 0x20000CCC, `test_spin_count` 0x20000B1C, `test_spin_cycles` 0x20000B20, TIM3 CNT 0x40000424), since the UART adapter's TX is not wired. J-Link Commander reads `w4` values as hex.
 
@@ -83,6 +83,23 @@ The voltage-mode ISR at a fixed angle takes about 1585 cycles; with random angle
 
 The angle is rebuilt from the three duties alone (Clarke of the duties; the SVPWM common mode cancels), so this checks the whole path count → electrical angle → `sinf`/`cosf` → inverse Park → SVPWM → duties. It does **not** check the encoder hardware: the debugger wrote the count. In one place the count read 3777 then 3776 right after the write of 3776, so the resting shaft sits on an encoder edge (one-count flicker). That is normal for a quadrature encoder at rest.
 
+### Hand-turn with the real encoder
+
+Boot 2, voltage mode, no debugger attached. The user turned the shaft by hand during a 120 s capture (`uart_handturn.log`, reports 1472–1548). The user reported "CW, about 2 turns". The encoder counted 7.7 turns forward (count up = CW from the shaft end, Stage 2) and 2.9 turns back, in four bursts of 3–6 s at about 0.4–0.5 turn/s. Why this differs from the user's count was not resolved; it does not affect the check below, which is per position.
+
+At that speed the duty pattern moves up to about 5700 electrical counts between two 10 Hz `rot` lines, more than half an electrical turn. So the unwrapped electrical/mechanical ratio aliases (the script prints 0.311 and a warning) and is not used. The alias-free check compares every row's duty angle with 7 × the logged mechanical count:
+
+`check_rotation.py uart_handturn.log`:
+
+| Check | Result |
+|---|---|
+| rows | 1200, all voltage mode |
+| shaft positions | 216 distinct, covering 60 of 64 sectors (5.6° each) of the mechanical circle |
+| duty angle vs 7 × mechanical count | **max 0.41 counts (0.036 electrical degrees)** |
+| control: the same comparison with 6 or 8 pole pairs | max 2047 counts (the worst possible), so the data rule out other ratios |
+
+Timing during the hand-turn: worst ISR 2079 cycles (12.2 µs), 0 overruns, 0 missed (`summarize.py uart_handturn.log`).
+
 ### Current mode
 
 With iq_ref = 1 A and no current possible, v_q sat at **6928 mV = 12 V/√3** (the limit), and v_d ran between the limits with the noise on the d current. SVPWM reported "limited" (the vector (v_d, v_q) is longer than the 6.93 V circle). Measured i_d/i_q: about ±0.4 A of noise around 0. This matches the Stage 3 ADC noise (SD 6.3 counts ≈ 0.1 A per phase), which Clarke/Park mix. As the roadmap expected: the PIs sit at their limits.
@@ -117,7 +134,7 @@ The boot bench's "full step" grew from 866–1395 to 1209–1729 cycles (all oth
 
 | Criterion | Result |
 |---|---|
-| Duty pattern rotates as you turn the shaft, 7 electrical per mechanical turn | **Partly**: passes with the debugger writing the encoder count (ratio 7.000, angle error 0.02°); **the hand-turn with the real encoder is open** |
+| Duty pattern rotates as you turn the shaft, 7 electrical per mechanical turn | **Pass**: hand-turn with the real encoder, duty angle = 7 × shaft angle within 0.04° at 216 positions around the circle; debugger-written sweep: 2.000 turns → 14.000 electrical turns |
 | WCET under 20 µs and zero overruns over several minutes | **Pass**: 13.8 µs max over 7.4 min, 0 overruns (one unexplained missed period at the debugger close of the flash session, see above) |
 | A forced overrun is detected | **Pass**: single overruns counted without a fault; three in a row latch the fault, outputs off |
 
