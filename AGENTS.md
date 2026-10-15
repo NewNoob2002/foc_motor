@@ -3,8 +3,8 @@
 ## 当前阶段
 
 - 2026-10-14 用户采用初学者路线图 `docs/plan/beginner_roadmap.md` 作为当前执行路径：Stage 0–7，每个 Stage 学一项技能并以可展示的结果结束。`docs/plan/development_roadmap.md` 保留为长期产品阶段门（M0–M6），Stage 与 M 节点的对应见初学者路线图第 5 节。
-- 当前处于 **Stage 3**（读取 ADC），2026-10-14 用户确认进入。进入下一个 Stage 前需用户明确确认，并在本节记录日期。
-- 已完成：Stage 0（工具链、safe-boot 固件、CI、host FOC 学习）；Stage 1（J-Link 启动安全检查和万用表复位检查，2026-10-14，记录见 `docs/evidence/lab_notes/stage1_boot_check.md`；R-18 波形仍留到 Stage 7 前）；Stage 2（TIM3 x4 编码器读数，每圈 4096 count、方向正确、Z 每圈一次同一 count、无丢数，2026-10-14，记录见 `docs/evidence/lab_notes/stage2_encoder.md`；线束 Z 实接 U7-3/PB3）。
+- 当前处于 **Stage 4**（MCU 引脚上的 PWM），2026-10-14 用户确认进入。进入下一个 Stage 前需用户明确确认，并在本节记录日期。
+- 已完成：Stage 0（工具链、safe-boot 固件、CI、host FOC 学习）；Stage 1（J-Link 启动安全检查和万用表复位检查，2026-10-14，记录见 `docs/evidence/lab_notes/stage1_boot_check.md`；R-18 波形仍留到 Stage 7 前）；Stage 2（TIM3 x4 编码器读数，每圈 4096 count、方向正确、Z 每圈一次同一 count、无丢数，2026-10-14，记录见 `docs/evidence/lab_notes/stage2_encoder.md`；线束 Z 实接 U7-3/PB3）；Stage 3（ADC2 读 IA/IC/VBUS/TEMP，零电流偏置 IA 1963.5、IC 1997.4 count，噪声 SD 6.3 count，VBUS≈0，换算公式在代码和记录中，2026-10-14，记录见 `docs/evidence/lab_notes/stage3_adc.md`）。
 - 各 Stage 的允许范围：
   - Stage 1–4：仅逻辑供电（USB 或调试器 3.3 V），不接 DCBUS，SD1–SD4 保持低。Stage 1 只用 J-Link 对板上现有固件做暂停、单步、观察点、读寄存器和复位，不烧录。允许在 BSP 中实现 TIM3 编码器、ADC2 读数、TIM1 PWM 与 ADC 触发，只在 MCU 引脚上观测。
   - Stage 5：允许把 `lib/foc` 编入测试固件（不接 ISR、不使能 PWM），做数值对比和 DWT 计时。

@@ -1,6 +1,6 @@
 # Stage 3 — Read the ADC
 
-Status: **all "done when" criteria pass** (runs 1–2, 2026-10-14). Moving to Stage 4 needs the user's confirmation, recorded in `AGENTS.md`.
+Status: **done** (2026-10-14). All "done when" criteria pass (runs 1–2); the user confirmed Stage 3 done and Stage 4 entry the same day (`AGENTS.md`).
 
 ## Setup
 
@@ -98,7 +98,7 @@ Over the 10 minutes (statistics of the per-report values):
 
 ## Run 2 (2026-10-14, firmware `f987f8d`)
 
-Flash `zephyr.hex` SHA-256 `01b9df53…`, `zephyr.bin` `616bb3dc…`, `verifybin` OK; same registers (SD low, TIM1 off, `CALFACT = 0x39`). First report:
+Flash `zephyr.hex` SHA-256 `01b9df53…`, `zephyr.bin` `616bb3dc…`, `verifybin` OK; same registers (SD low, TIM1 off, `CALFACT = 0x39`). Over 3 minutes (166 reports): IA offset 1963.32, IC 1997.34, VBUS 0.22 counts; noise SD 6.29 / 6.34 / 0.41, the same as run 1 across a reflash and reset. First report:
 
 ```
 1000 samples per channel per report, VDDA 3300 mV assumed
