@@ -60,8 +60,9 @@ typedef struct {
 extern const foc_vector_in_t foc_vectors_in[FOC_VECTORS_COUNT];
 
 /*
- * One current-loop step: b = -(a + c), Clarke, sinf/cosf, Park, a PI per
- * axis limited to +-vbus/sqrt(3), inverse Park, SVPWM.
+ * One current-loop step: b = -(a + c), sinf/cosf, then foc_current_step()
+ * (Clarke, Park, a PI per axis limited to +-vbus/sqrt(3), inverse Park,
+ * SVPWM) with both PIs starting from the vector's integrals.
  */
 void foc_vector_step(const foc_vector_in_t* in, foc_vector_out_t* out);
 
