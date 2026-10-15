@@ -1,6 +1,6 @@
 # R-18 — SD and PWM pins during power-up and reset (oscilloscope)
 
-Status: **procedure ready** (2026-10-14). Closes R-18 if every capture passes; R-18 is a Stage 7 entry condition (`docs/plan/risk_list.md`).
+Status: **pass** (2026-10-14): no net crossed 0.8 V on power-up, the reset button or SYSRESETREQ. R-18 is closed for firmware `1d39b8c`; repeat this procedure with the firmware used for Stage 7.
 
 ## What is checked
 
@@ -52,10 +52,21 @@ Pass for a net: no trigger at steps 3–5 and about 0 V in step 2.
 | Net | Idle level (step 2) | Power-up | SW1 reset | SYSRESETREQ | Screenshot |
 |---|---|---|---|---|---|
 | SD1 | 30 mV | no trigger | no trigger | no trigger (23:37:49) | — |
-| SD2 | not reported | ? | ? | no trigger (23:38:35) | — |
-| SD3 | not reported | ? | ? | no trigger (23:39:20) | — |
-| SD4 | not reported | ? | ? | no trigger (23:39:50) | — |
-| PWMA | not reported | ? | ? | no trigger (23:40:14) | — |
-| PWMB | not reported | ? | ? | no trigger (23:44:01) | — |
-| PWMC | not reported | ? | ? | no trigger (23:44:34) | — |
-| PWMD | not reported | ? | ? | no trigger (23:45:02) | — |
+| SD2 | about 30 mV | no trigger | no trigger | no trigger (23:38:35) | — |
+| SD3 | about 30 mV | no trigger | no trigger | no trigger (23:39:20) | — |
+| SD4 | about 30 mV | no trigger | no trigger | no trigger (23:39:50) | — |
+| PWMA | about 70 mV | no trigger | no trigger | no trigger (23:40:14) | — |
+| PWMB | about 70 mV | no trigger | no trigger | no trigger (23:44:01) | — |
+| PWMC | about 70 mV | no trigger | no trigger | no trigger (23:44:34) | — |
+| PWMD | about 70 mV | no trigger | no trigger | no trigger (23:45:02) | — |
+
+## Conclusion and limits
+
+All 8 nets pass: SD1–SD4 idle at about 30 mV and PWMA–PWMD at about 70 mV (well under the EG2104 1.0 V low limit; the PWM lines are driven by nothing, PC0–PC3 being analog, so the probe sees the EG2104 input pull-down and noise), and none triggered at 0.8 V on power-up, SW1 or SYSRESETREQ.
+
+Limits:
+- One trial per event per net; the power-up and SW1 tests were done by the user without timestamps.
+- Valid for firmware `1d39b8c` only. A firmware that configures these pins differently (Stage 6/7) needs the same captures again.
+- Without DCBUS the EG2104 is unpowered; this shows what the MCU drives onto the nets, which is what R-18 asks. It does not show gate-driver outputs.
+- Pulses shorter than about 10 ns (two samples at 200 MSa/s) could be missed.
+- No screenshots were saved.
