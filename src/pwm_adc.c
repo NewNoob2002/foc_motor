@@ -2,6 +2,8 @@
 
 #include "pwm_adc.h"
 
+#include "cycles.h"
+
 #include <errno.h>
 
 #include <soc.h>
@@ -98,7 +100,7 @@ static void stats_reset_locked(void) {
 }
 
 ISR_DIRECT_DECLARE(dma_isr) {
-    uint32_t entry = DWT->CYCCNT;
+    uint32_t entry = cycles_now();
 
     uint16_t cnt = (uint16_t)LL_TIM_GetCounter(TIM1);
     bool up = LL_TIM_GetDirection(TIM1) == LL_TIM_COUNTERDIRECTION_UP;
@@ -150,7 +152,7 @@ ISR_DIRECT_DECLARE(dma_isr) {
             break;
     }
 
-    stats.exec_max = MAX(stats.exec_max, DWT->CYCCNT - entry);
+    stats.exec_max = MAX(stats.exec_max, cycles_now() - entry);
     (void)atomic_inc(&seq);
     return 0; /* no reschedule: required for a zero-latency ISR */
 }
@@ -176,15 +178,6 @@ static int clocks_on(void) {
         }
     }
     return 0;
-}
-
-static bool dwt_running(void) {
-    return (CoreDebug->DEMCR & CoreDebug_DEMCR_TRCENA_Msk) != 0U && (DWT->CTRL & DWT_CTRL_CYCCNTENA_Msk) != 0U;
-}
-
-static void dwt_start(void) {
-    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
-    DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
 }
 
 /* PA8-PA10 and PB9 to TIM1. PC0-PC3 untouched. */
@@ -320,7 +313,7 @@ int pwm_adc_init(void) {
     if (ret < 0) {
         return ret;
     }
-    dwt_start();
+    (void)cycles_start();
     tim1_setup();
     if (!pwm_adc_outputs_safe()) {
         return -EPERM;
@@ -351,12 +344,7 @@ int pwm_adc_init(void) {
 
 bool pwm_adc_stats_take(pwm_adc_stats_t* out) {
     atomic_val_t before;
-    /* A J-Link disconnect clears TRCENA/CYCCNTENA (seen in stage 4 run 1). */
-    bool timing_valid = dwt_running();
-
-    if (!timing_valid) {
-        dwt_start();
-    }
+    bool timing_valid = cycles_start();
 
     do {
         before = atomic_get(&seq);

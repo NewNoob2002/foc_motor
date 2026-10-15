@@ -2,6 +2,7 @@
 
 #include "analog.h"
 #include "encoder.h"
+#include "foc_bench.h"
 #include "pwm_adc.h"
 
 #include <zephyr/devicetree.h>
@@ -47,7 +48,8 @@ BUILD_ASSERT(DT_DMAS_CELL_BY_NAME(DT_NODELABEL(usart3), tx, slot) == 29, "USART3
 /*
  * The report path (log package + log message allocation) needs more than the
  * 512-byte main stack that the M1 budget pins, so it runs in its own
- * statically allocated thread. Lower priority than the log thread (6).
+ * statically allocated thread, which also runs the Stage 5 FOC bench first.
+ * Lower priority than the log thread (6).
  */
 #define REPORT_STACK_SIZE 1024
 #define REPORT_PRIORITY   7
@@ -111,6 +113,7 @@ static void poll_mode_key(const struct device* uart) {
     }
 }
 
+/* Stage 5 bench first, while no ISR can disturb the timing; then the stage 4 timebase and its report. */
 static void report_loop(void* p1, void* p2, void* p3) {
     ARG_UNUSED(p1);
     ARG_UNUSED(p2);
@@ -118,6 +121,17 @@ static void report_loop(void* p1, void* p2, void* p3) {
 
     const struct device* const uart = DEVICE_DT_GET(DT_CHOSEN(zephyr_console));
     pwm_adc_stats_t st;
+
+    foc_bench_run();
+
+    int ret = pwm_adc_init();
+
+    if (ret < 0) {
+        LOG_ERR("pwm_adc_init failed: %d", ret);
+        return;
+    }
+    LOG_INF("TIM1 ARR %u (20 kHz center-aligned), ADC2 [IA, IC] on TRGO2 at the top; mode %s", PWM_ARR,
+            mode_names[PWM_MODE_CH3_25]);
 
     /* Drop the start-up window. */
     (void)pwm_adc_stats_take(&st);
@@ -139,19 +153,12 @@ static void report_loop(void* p1, void* p2, void* p3) {
 int main(void) {
     int ret = encoder_init();
 
-    LOG_INF("Stage 4 scope build; TIM1 CH1-3 on PA8-PA10, CH3N on PB9 (U7-4), PC0-PC3 analog; SD1-SD4 low");
+    LOG_INF("Stage 5 build: FOC bench, then the stage 4 timebase (TIM1 CH1-3 on PA8-PA10, CH3N on PB9 (U7-4)); "
+            "PC0-PC3 analog; SD1-SD4 low");
     if (ret < 0) {
         LOG_ERR("encoder_init failed: %d", ret);
         return 0;
     }
-    ret = pwm_adc_init();
-    if (ret < 0) {
-        LOG_ERR("pwm_adc_init failed: %d", ret);
-        return 0;
-    }
-    LOG_INF("TIM1 ARR %u (20 kHz center-aligned), ADC2 [IA, IC] on TRGO2 at the top; mode %s", PWM_ARR,
-            mode_names[PWM_MODE_CH3_25]);
-
     (void)k_thread_create(&report_thread, report_stack, K_THREAD_STACK_SIZEOF(report_stack), report_loop, NULL, NULL,
                           NULL, REPORT_PRIORITY, 0, K_NO_WAIT);
     return 0;

@@ -25,6 +25,12 @@ target_compile_features(foc PUBLIC c_std_11)
 # double math is software-emulated on the single-precision M4F FPU.
 target_compile_options(foc PRIVATE ${FOC_FLAGS} -Wdouble-promotion)
 
+# Fixed current-loop vectors shared with the Stage 5 firmware (src/foc_bench.c).
+add_library(foc_vectors STATIC ${CMAKE_CURRENT_SOURCE_DIR}/../../foc_vectors/foc_vectors.c)
+target_include_directories(foc_vectors PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/../../foc_vectors)
+target_link_libraries(foc_vectors PUBLIC foc)
+target_compile_options(foc_vectors PRIVATE ${FOC_FLAGS} -Wdouble-promotion)
+
 function(foc_host_executable name source)
   add_executable(${name} ${source})
   target_compile_options(${name} PRIVATE ${FOC_FLAGS})
@@ -44,9 +50,13 @@ foc_host_executable(test_svpwm test_svpwm.c)
 foc_host_executable(sim_current_loop sim/sim_current_loop.c)
 foc_host_executable(sim_svpwm sim/sim_svpwm.c)
 foc_host_executable(sim_speed_loop sim/sim_speed_loop.c)
+foc_host_executable(vec_compare vec_compare.c)
+target_link_libraries(vec_compare PRIVATE foc_vectors)
 
 foc_host_test(foc_host_smoke)
 foc_host_test(test_transform)
+add_test(NAME vec_compare_selftest COMMAND vec_compare --selftest)
+set_tests_properties(vec_compare_selftest PROPERTIES ENVIRONMENT "ASAN_OPTIONS=detect_leaks=0")
 if(FOC_EXERCISES)
   foc_host_test(test_pi)
   foc_host_test(test_svpwm)
