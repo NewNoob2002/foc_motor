@@ -3,13 +3,15 @@
 ## 当前阶段
 
 - 2026-10-14 用户采用初学者路线图 `docs/plan/beginner_roadmap.md` 作为当前执行路径：Stage 0–7，每个 Stage 学一项技能并以可展示的结果结束。`docs/plan/development_roadmap.md` 保留为长期产品阶段门（M0–M6），Stage 与 M 节点的对应见初学者路线图第 5 节。
-- Stage 6（不带电机供电的真实 FOC 中断）已完成，2026-10-15 用户确认。下一步 **Stage 7（首次带电）尚未获准**：须先满足下方 Stage 7 条件（R-02 决定、用 Stage 7 固件重做 R-18 波形记录）并由用户明确确认进入。进入下一个 Stage 前需用户明确确认，并在本节记录日期。
+- Stage 6（不带电机供电的真实 FOC 中断）已完成，2026-10-15 用户确认。下一步 **Stage 7（首次带电）尚未获准**：R-02 已于 2026-10-15 由用户决定（见下方 Stage 7 条目）；仍须用 Stage 7 固件重做 R-18 波形记录、确认母线电压和 J-Link 供电处理，并由用户明确确认进入。进入下一个 Stage 前需用户明确确认，并在本节记录日期。
 - 已完成：Stage 0（工具链、safe-boot 固件、CI、host FOC 学习）；Stage 1（J-Link 启动安全检查和万用表复位检查，2026-10-14，记录见 `docs/evidence/lab_notes/stage1_boot_check.md`；R-18 波形仍留到 Stage 7 前）；Stage 2（TIM3 x4 编码器读数，每圈 4096 count、方向正确、Z 每圈一次同一 count、无丢数，2026-10-14，记录见 `docs/evidence/lab_notes/stage2_encoder.md`；线束 Z 实接 U7-3/PB3）；Stage 3（ADC2 读 IA/IC/VBUS/TEMP，零电流偏置 IA 1963.5、IC 1997.4 count，噪声 SD 6.3 count，VBUS≈0，换算公式在代码和记录中，2026-10-14，记录见 `docs/evidence/lab_notes/stage3_adc.md`）；Stage 4（TIM1 中心对齐 20 kHz 内部运行，ADC2 [IA, IC] 由 TRGO2 在计数顶点触发，DMA 零延迟 ISR 周期 8500±25 cycle；示波器在 CH3N/PB9 上确认频率、占空比、中心对齐与更新事件，Stage 6 使用 RCR=1，2026-10-15，记录见 `docs/evidence/lab_notes/stage4_pwm.md`；R-18 已对固件 `1d39b8c` 关闭，见 `docs/evidence/lab_notes/r18_boot_capture.md`）；Stage 5（`lib/foc` 编入固件并开启 FPU，64 组固定向量与 host 结果一致（最大误差 1–2 个 float ULP），一次完整电流环 step 最长 1395 cycle = 8.2 us（预算 3400），sinf+cosf 最长 761 cycle，double sin+cos 最长 6553 cycle，2026-10-15，记录见 `docs/evidence/lab_notes/stage5_foc_on_chip.md`）；Stage 6（FOC ISR 在零延迟 DMA 中断中运行 `foc_current_step`，RCR=1 顶点更新，无 DCBUS、SD1–SD4 低；手转电机轴时占空比角度 = 7 × 机械角，216 个位置最大误差 0.41 count；7.4 分钟内 ISR 最长 2344 cycle = 13.8 us、0 超期；强制超期可检测，连续 3 次锁存故障（MOE=0、占空比 50 %），2026-10-15，记录见 `docs/evidence/lab_notes/stage6_foc_isr.md`）。
 - 各 Stage 的允许范围：
   - Stage 1–4：仅逻辑供电（USB 或调试器 3.3 V），不接 DCBUS，SD1–SD4 保持低。Stage 1 只用 J-Link 对板上现有固件做暂停、单步、观察点、读寄存器和复位，不烧录。允许在 BSP 中实现 TIM3 编码器、ADC2 读数、TIM1 PWM 时基与 ADC 触发；TIM1 只在内部运行，见“安全默认值”。
   - Stage 5：允许把 `lib/foc` 编入测试固件（不接 ISR、不使能 PWM），做数值对比和 DWT 计时。
   - Stage 6：允许 FOC ISR 在不接 DCBUS、SD1–SD4 保持低的条件下运行。
   - Stage 7（首次带电）：尚未获准。进入前须满足“安全默认值”，用逻辑分析仪或示波器记录 R-18 的真实引脚波形，并由用户对 R-02 作出决定（先增加独立于 CPU 的硬件关断，或仅针对低压限流学习台架正式接受风险），记录在本文件和 `docs/plan/risk_list.md`。
+    - 2026-10-15 用户选择 (b)：**仅为 Stage 7 学习台架接受 R-02**。条件：台架电源限流 500 mA、OCP 开启；母线取让 `+12V`（12.6 V）稳压的低值，最低约 14.1 V（`HW-PWR-002`），具体值进入前由用户确认；电机固定、轴上无负载；有人值守，电源输出开关作急停。限流不限制相电流，固件须限制电压幅值并在 ISR 中按 IA/IC 做软件过流关断。不适用于 M4 或更高电压/电流测试；R-02 对 M4 仍为阻断项。
+    - 带 DCBUS 前另须：确认并关闭 J-Link 对板子的 3.3 V 供电（接入母线后板上 LP5907 也驱动 `+3.3V`，`HW-PWR-003`）；PC0–PC3 只在 `+12V` 有效后才可驱动（R-19）。
 - host FOC 学习继续：`lib/foc` 的纯 C 数学先以 host 测试和 `tests/host/foc/sim/` 仿真验证，说明见 `docs/study/foc_study_guide.md`。
 - 硬件事实和证据编号见 `docs/hardware/hardware_reference.md`，架构基线见 `docs/design/zephyr_architecture.md`，路线图见 `docs/plan/beginner_roadmap.md`（当前执行）和 `docs/plan/development_roadmap.md`（长期阶段门），M1 构建证据见 `docs/evidence/m1_build_evidence.md`，未关闭风险见 `docs/plan/risk_list.md`。
 
