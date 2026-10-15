@@ -2,6 +2,7 @@
 
 #include "analog.h"
 #include "encoder.h"
+#include "pwm_adc.h"
 
 #include <zephyr/devicetree.h>
 #include <zephyr/devicetree/dma.h>
@@ -22,7 +23,8 @@ ASSERT_SHUTDOWN_LOW(DT_NODELABEL(sd1_hog), DT_NODELABEL(gpiob), 0, "SD1");
 ASSERT_SHUTDOWN_LOW(DT_NODELABEL(sd2_hog), DT_NODELABEL(gpioa), 1, "SD2");
 ASSERT_SHUTDOWN_LOW(DT_NODELABEL(sd3_hog), DT_NODELABEL(gpioa), 2, "SD3");
 ASSERT_SHUTDOWN_LOW(DT_NODELABEL(sd4_hog), DT_NODELABEL(gpioa), 0, "SD4");
-BUILD_ASSERT(!DT_NODE_HAS_STATUS(DT_NODELABEL(timers1), okay), "TIM1 must remain disabled during M1");
+BUILD_ASSERT(!DT_NODE_HAS_STATUS(DT_NODELABEL(timers1), okay),
+             "TIM1 node must stay disabled: no Zephyr PWM driver or pins (src/pwm_adc.c)");
 BUILD_ASSERT(DT_SAME_NODE(DT_CHOSEN(zephyr_console), DT_NODELABEL(usart3))
                  && DT_SAME_NODE(DT_CHOSEN(zephyr_shell_uart), DT_NODELABEL(usart3)),
              "Console and shell UART must use the USART3 header");
@@ -33,109 +35,18 @@ BUILD_ASSERT(DT_DMAS_CELL_BY_NAME(DT_NODELABEL(usart3), tx, channel) == 2,
              "USART3 TX must use DMA selector 2 (DMA1 channel 3) during M1");
 BUILD_ASSERT(DT_DMAS_CELL_BY_NAME(DT_NODELABEL(usart3), tx, slot) == 29, "USART3 TX must use DMAMUX request 29");
 
-#define SAMPLES_PER_CHANNEL 1000U
-#define REPORT_PERIOD_MS    1000
+#define REPORT_PERIOD_MS  1000
 
 /* Mid-scale code: where IA/IC sit with zero current if VREF1.65 is exactly VDDA / 2. */
-#define MID_SCALE_X100      (ANALOG_FULL_SCALE * 100 / 2)
+#define MID_SCALE_X100    (ANALOG_FULL_SCALE * 100 / 2)
 
-typedef struct {
-    uint32_t n;
-    uint32_t sum;
-    uint64_t sum_sq;
-    uint16_t min;
-    uint16_t max;
-} sample_stats_t;
-
-/* Integer square root (floor), for the standard deviation without the FPU. */
-static uint32_t isqrt64(uint64_t v) {
-    uint64_t root = 0;
-    uint64_t bit = 1ULL << 62U;
-
-    while (bit > v) {
-        bit >>= 2U;
-    }
-    while (bit != 0) {
-        if (v >= root + bit) {
-            v -= root + bit;
-            root = (root >> 1U) + bit;
-        } else {
-            root >>= 1U;
-        }
-        bit >>= 2U;
-    }
-    return (uint32_t)root;
-}
-
-static int sample_channel(analog_channel_t ch, uint32_t n, sample_stats_t* st) {
-    *st = (sample_stats_t){.min = UINT16_MAX};
-
-    for (uint32_t i = 0; i < n; i++) {
-        uint16_t code;
-        int ret = analog_read(ch, &code);
-
-        if (ret < 0) {
-            return ret;
-        }
-        st->n++;
-        st->sum += code;
-        st->sum_sq += (uint64_t)code * code;
-        st->min = MIN(st->min, code);
-        st->max = MAX(st->max, code);
-    }
-    return 0;
-}
-
-static int32_t mean_x100(const sample_stats_t* st) {
-    return (int32_t)(((uint64_t)st->sum * 100U + st->n / 2U) / st->n);
-}
-
-/* Sample standard deviation in hundredths of a count. */
-static int32_t sd_x100(const sample_stats_t* st) {
-    uint64_t n = st->n;
-
-    if (n < 2U) {
-        return 0;
-    }
-    /* n * sum_sq - sum^2 = n^2 * variance_population; exact in integers, <= 1.7e13 for n = 1000. */
-    uint64_t spread = n * st->sum_sq - (uint64_t)st->sum * st->sum;
-
-    return (int32_t)isqrt64(spread * 10000U / (n * (n - 1U)));
-}
+/* TIM1 counts at HCLK: 170 ticks per microsecond. */
+#define TIM1_TICKS_PER_US 170U
 
 /*
- * Kept out of line and split into short log calls: deferred logging builds
- * each message package on the caller's stack, and main has only 512 bytes.
- */
-static __noinline void report(analog_channel_t ch, const sample_stats_t* st) {
-    int32_t mean = mean_x100(st);
-    int32_t sd = sd_x100(st);
-
-    LOG_INF("%-4s mean %4d.%02d sd %d.%02d min %4u max %4u", analog_name(ch), mean / 100, mean % 100, sd / 100,
-            sd % 100, st->min, st->max);
-
-    switch (ch) {
-        case ANALOG_CH_IA:
-        case ANALOG_CH_IC:
-            /* Current vs. the ideal mid-scale offset; the noise on the same scale. */
-            LOG_INF("     %4d mV, %+d mA vs mid-scale, sd %d mA", analog_code_x100_to_mv(mean),
-                    analog_phase_current_ma(mean, MID_SCALE_X100), analog_phase_current_ma(sd, 0));
-            break;
-        case ANALOG_CH_VBUS:
-            LOG_INF("     %4d mV, bus %d mV", analog_code_x100_to_mv(mean), analog_vbus_mv(mean));
-            break;
-        case ANALOG_CH_TEMP:
-            LOG_INF("     %4d mV, NTC %d ohm", analog_code_x100_to_mv(mean), analog_ntc_ohm(mean));
-            break;
-        default:
-            break;
-    }
-}
-
-/*
- * The report path (log package + log message allocation + ADC driver) needs
- * more than the 512-byte main stack that the M1 budget pins, so it runs in
- * its own statically allocated thread. Lower priority than the log thread (6).
+ * The report path (log package + log message allocation) needs more than the
+ * 512-byte main stack that the M1 budget pins, so it runs in its own
+ * statically allocated thread. Lower priority than the log thread (6).
  */
 #define REPORT_STACK_SIZE 1024
 #define REPORT_PRIORITY   7
@@ -143,42 +54,65 @@ static __noinline void report(analog_channel_t ch, const sample_stats_t* st) {
 K_THREAD_STACK_DEFINE(report_stack, REPORT_STACK_SIZE);
 static struct k_thread report_thread;
 
+static int32_t mean_x100(uint32_t sum, uint32_t n) {
+    return (n == 0U) ? 0 : (int32_t)(((uint64_t)sum * 100U + n / 2U) / n);
+}
+
+/* Kept out of line so its log packages live on this frame, not report_loop's. */
+static __noinline void report(uint32_t n, const pwm_adc_stats_t* st) {
+    if (st->isr_count == 0U) {
+        LOG_WRN("report %u: no ISR in this window; DMA errors %u, ADC overruns %u", n, st->dma_errors,
+                st->adc_overruns);
+        return;
+    }
+
+    /* Counting down, CNT = ARR - ticks since the top, where the ADC was triggered. */
+    uint32_t after_top_min = (PWM_ARR - st->cnt_max) * 100U / TIM1_TICKS_PER_US;
+    uint32_t after_top_max = (PWM_ARR - st->cnt_min) * 100U / TIM1_TICKS_PER_US;
+    int32_t ia = mean_x100(st->ia_sum, st->isr_count);
+    int32_t ic = mean_x100(st->ic_sum, st->isr_count);
+
+    LOG_INF("report %u: %u ISR/s, period %u..%u cyc, exec max %u cyc", n, st->isr_count, st->period_min, st->period_max,
+            st->exec_max);
+    LOG_INF("  TIM1 CNT at ISR %u..%u (%u.%02u..%u.%02u us after top), counting up in %u", st->cnt_min, st->cnt_max,
+            after_top_min / 100U, after_top_min % 100U, after_top_max / 100U, after_top_max % 100U, st->counting_up);
+    LOG_INF("  IA mean %d.%02d (%+d mA vs mid-scale), IC mean %d.%02d (%+d mA)", ia / 100, ia % 100,
+            analog_phase_current_ma(ia, MID_SCALE_X100), ic / 100, ic % 100,
+            analog_phase_current_ma(ic, MID_SCALE_X100));
+    LOG_INF("  DMA errors %u, ADC overruns %u, encoder mech %u", st->dma_errors, st->adc_overruns,
+            encoder_count() % ENCODER_COUNTS_PER_REV);
+}
+
 static void report_loop(void* p1, void* p2, void* p3) {
     ARG_UNUSED(p1);
     ARG_UNUSED(p2);
     ARG_UNUSED(p3);
 
-    for (uint32_t n = 1;; n++) {
-        LOG_INF("report %u, encoder mech %u", n, encoder_count() % ENCODER_COUNTS_PER_REV);
-        for (int ch = 0; ch < ANALOG_CH_COUNT; ch++) {
-            sample_stats_t st;
-            int ret = sample_channel((analog_channel_t)ch, SAMPLES_PER_CHANNEL, &st);
+    pwm_adc_stats_t st;
 
-            if (ret < 0) {
-                LOG_ERR("%s read failed: %d", analog_name((analog_channel_t)ch), ret);
-                return;
-            }
-            report((analog_channel_t)ch, &st);
-        }
+    /* Drop the start-up window. */
+    pwm_adc_stats_take(&st);
+    for (uint32_t n = 1;; n++) {
         k_msleep(REPORT_PERIOD_MS);
+        pwm_adc_stats_take(&st);
+        report(n, &st);
     }
 }
 
 int main(void) {
     int ret = encoder_init();
 
-    LOG_INF("Stage 3 ADC; SD1-SD4 low; TIM1 disabled; USART3 DMA TX 921600");
+    LOG_INF("Stage 4 PWM timebase; TIM1 outputs off, PC0-PC3 analog; SD1-SD4 low; USART3 DMA TX 921600");
     if (ret < 0) {
         LOG_ERR("encoder_init failed: %d", ret);
         return 0;
     }
-    ret = analog_init();
+    ret = pwm_adc_init();
     if (ret < 0) {
-        LOG_ERR("analog_init failed: %d", ret);
+        LOG_ERR("pwm_adc_init failed: %d", ret);
         return 0;
     }
-    LOG_INF("%u samples per channel per report, VDDA %d mV assumed", SAMPLES_PER_CHANNEL,
-            analog_code_x100_to_mv(ANALOG_FULL_SCALE * 100));
+    LOG_INF("TIM1 ARR %u (20 kHz center-aligned), CCR1-3 25/50/75 %%, ADC2 [IA, IC] on TRGO2 at the top", PWM_ARR);
 
     (void)k_thread_create(&report_thread, report_stack, K_THREAD_STACK_SIZEOF(report_stack), report_loop, NULL, NULL,
                           NULL, REPORT_PRIORITY, 0, K_NO_WAIT);

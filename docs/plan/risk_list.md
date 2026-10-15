@@ -22,6 +22,7 @@
 | R-16 | Low | OPEN | 文件名是 STM32G431RBT6，但 PDF 元数据标题曾显示其他 G4 型号；资料版本未受控 | 错用引脚/外设资料 | 以正文 STM32G431xB 和芯片丝印为准；M1 读取器件 ID 并锁定受控数据手册版本 | M1 |
 | R-17 | Low | OPEN | 2026-09-05 切至 H2 USART3；早期捕获 0 B，已有 `boot4` 1262 B 离线复核通过，原 FAIL 为检查脚本正则错误 | 已有完整 TX 日志；修正脚本后的新一轮同步复位重复验证未执行，RX/shell 不在通过范围内 | 补齐 HIL 预检后，按已核对接线使用新采集编号复验：完整 banner、安全消息、`seq=0..15` 各一次，无非法字节/错误；保留原失败及复核证据；见 [UART3 验证记录](../evidence/uart3_validation.md) | M1 |
 | R-18 | Medium | BLOCKER | SD1-SD4 和 PC0-PC3 目前只有 devicetree/SWD 寄存器证据，没有真实引脚波形 | 无法排除上电复位或 Zephyr 初始化瞬间的门极使能/毛刺 | 在无母线条件下，用示波器/逻辑分析仪记录上电复位、SYSRESETREQ 和启动过程：SD1-SD4 始终为低，PC0-PC3 无 PWM/跳变；保存接线、仪器设置、固件 SHA 和原始波形。初学者路线图 Stage 1 的 J-Link 观察点与万用表复位检查只补充软件路径和静态证据，不能关闭本项 | M1 关闭前；Stage 7（首次接入 DCBUS）前 |
+| R-19 | High | OPEN | PC0-PC3 直连 EG2104 IN，无串联电阻；无 DCBUS 时 EG2104 VCC=0 V，IN 绝对最大值 VCC+0.3 V（`HW-PWM-009`）。原 Stage 4-6 计划在无母线时于 PC0-PC2 输出 PWM，会超限 | 栅极驱动或 MCU 引脚损坏；经输入保护向未上电的 +12V 网络反灌 | 2026-10-14 用户选择 Stage 4 只在内部运行 TIM1（CCER=0、MOE=0、PC0-PC3 保持模拟），固件启动时回读检查；需要波形时改用未连接的 PA8/PA9/PA10，另行确认。关闭条件：带 DCBUS（+12V 有效）前不驱动 PC0-PC3，并在 Stage 7 前复核 | Stage 4-6 |
 
 ## 当前阻断结论
 

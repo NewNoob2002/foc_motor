@@ -1,15 +1,12 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 
 /*
- * BSP: ADC2 readings of the phase currents, bus voltage and NTC, plus the
- * board's count-to-unit conversions (docs/hardware/hardware_reference.md
- * section 4 and schematic R36/R38).
+ * BSP: the board's ADC count-to-unit conversions for the phase currents,
+ * bus voltage and NTC (docs/hardware/hardware_reference.md section 4 and
+ * schematic R36/R38). The samples come from src/pwm_adc.c.
  *
- * Stage 3 uses the Zephyr ADC API from a thread, one blocking conversion at
- * a time. It must not be called from the FOC ISR; Stage 4 moves IA/IC to a
- * TIM1-triggered sequence.
- *
- * All conversions are integer and take VDDA from the devicetree (vref-mv).
+ * All conversions are integer and take VDDA from the ADC2 devicetree node
+ * (vref-mv, default 3300).
  */
 
 #ifndef FOC_MOTOR_ANALOG_H
@@ -19,22 +16,6 @@
 
 /* 12-bit full-scale code (RM0440: V = code * VREF+ / 4095). */
 #define ANALOG_FULL_SCALE 4095
-
-typedef enum {
-    ANALOG_CH_IA,
-    ANALOG_CH_IC,
-    ANALOG_CH_VBUS,
-    ANALOG_CH_TEMP,
-    ANALOG_CH_COUNT,
-} analog_channel_t;
-
-/* Sets up the four ADC2 channels. Returns 0 or -errno. */
-int analog_init(void);
-
-/* One blocking conversion. Returns 0 or -errno; *code is 0..ANALOG_FULL_SCALE. */
-int analog_read(analog_channel_t ch, uint16_t* code);
-
-const char* analog_name(analog_channel_t ch);
 
 /* Pin voltage in mV for a code given in hundredths of a count. */
 int32_t analog_code_x100_to_mv(int32_t code_x100);

@@ -64,11 +64,12 @@ Register addresses (RM0440, check against the reference manual): GPIOA `0x4800_0
 - **Do:** logic power only (USB or the debugger's 3.3 V). Read IA, IC, VBUS and TEMP; average 1000 samples of IA/IC with no current.
 - **Done when:** IA/IC offsets recorded (expect near 2048 counts) with their noise in counts; VBUS reads near 0; the conversion formulas are in code and in the lab note.
 
-### Stage 4 — PWM on the MCU pins
+### Stage 4 — The PWM timebase and the ADC trigger
 
-- **Learn:** center-aligned PWM, shadow registers and the update event, triggering the ADC from TIM1.
-- **Do:** logic power only, SD1–SD4 low. TIM1 CH1–3 at 20 kHz with fixed duties (for example 0.25 / 0.50 / 0.75); trigger ADC2 at the counter top; toggle a test pin in the ADC interrupt (AGENTS.md allows PC3 while SD4 stays low).
-- **Done when:** the scope shows 20 kHz, the three pulses centered on each other, the ADC sample in the middle of the period, and a duty change taking effect at an update event, never mid-period.
+- **Learn:** center-aligned PWM, shadow registers and the update event, triggering the ADC from TIM1, measuring an ISR with DWT.
+- **Do:** logic power only, SD1–SD4 low. TIM1 CH1–3 at 20 kHz with fixed duties (0.25 / 0.50 / 0.75) **with every output disabled**: PC0–PC3 drive the EG2104 IN pins directly, and without DCBUS their limit is VCC + 0.3 V = 0.3 V (`HW-PWM-009`, R-19; found 2026-10-14). TIM1 CH4 (internal) triggers ADC2 `[IA, IC]` at the counter top; DMA moves the results; the DMA interrupt measures itself with DWT.
+- **Done when:** register read-back shows the configuration (center-aligned, ARR for 20 kHz, CCR1–3, preload, TRGO2, `CCER = 0`, `MOE = 0`, PC0–PC3 analog); the ISR runs 20,000 times per second with a period of 8500 cycles and small jitter; the TIM1 count at ISR entry puts the sample at the top of the period; IA/IC match the Stage 3 offsets; no DMA errors or ADC overruns over several minutes.
+- **Deferred:** the waveform checks (three pulses centered, a duty change taking effect only at an update event) need TIM1 on the unconnected pins PA8/PA9/PA10 and a logic analyzer, with the user's go-ahead.
 
 ### Stage 5 — The FOC math on the chip
 
@@ -79,7 +80,7 @@ Register addresses (RM0440, check against the reference manual): GPIOA `0x4800_0
 ### Stage 6 — The real FOC interrupt, without motor power
 
 - **Learn:** the 20 kHz ISR structure, the delay between sample and update, overrun detection.
-- **Do:** combine stages 2–5. The ADC interrupt reads IA/IC (about 0 A) and TIM3, runs the full current-loop code path, and writes CCR1–3. No current can flow, so the PIs sit at their limits; that is expected. To see something meaningful, also run a mode that sends a fixed small voltage vector (`vd` only) through inverse Park at `theta_e` and SVPWM. SD1–SD4 stay low; look at PC0–PC2 on the scope and turn the shaft by hand.
+- **Do:** combine stages 2–5. The ADC interrupt reads IA/IC (about 0 A) and TIM3, runs the full current-loop code path, and writes CCR1–3. No current can flow, so the PIs sit at their limits; that is expected. To see something meaningful, also run a mode that sends a fixed small voltage vector (`vd` only) through inverse Park at `theta_e` and SVPWM. SD1–SD4 stay low and TIM1 outputs stay disabled (R-19); log the CCR1–3 values (or use PA8–PA10 with a logic analyzer) and turn the shaft by hand.
 - **Done when:** the duty pattern rotates as you turn the shaft (7 electrical turns per mechanical turn); DWT shows WCET under 20 µs and zero overruns over several minutes; a forced overrun is detected.
 
 ### Stage 7 — First power (needs the decisions in section 4 and the R-18 capture)
@@ -108,7 +109,7 @@ Register addresses (RM0440, check against the reference manual): GPIOA `0x4800_0
 What adopting this plan changed:
 
 - `AGENTS.md` "当前阶段": the current position is a stage number; moving to the next stage needs your explicit confirmation, recorded there with the date. Each stage's allowed scope is listed there: stages 1–4 USB power only with SD1–SD4 low, `lib/foc` in a test firmware from stage 5, the FOC ISR from stage 6, and stage 7 not allowed until the R-02 decision is recorded.
-- `AGENTS.md` "安全默认值": one explicit exception, PWM on the MCU pins in stages 4–6 while DCBUS is disconnected and SD1–SD4 are low.
+- `AGENTS.md` "安全默认值": one explicit exception, TIM1 running internally (outputs disabled) in stages 4–6 while DCBUS is disconnected and SD1–SD4 are low. PC0–PC3 are not driven without DCBUS (`HW-PWM-009`, R-19).
 - `development_roadmap.md` stays as the long-term product plan. Mapping: stage 1 = M1-09 and the software-path part of M1-08 (the M1-08 waveform, R-18, moves to the stage 7 entry), stages 2–4 = M2, stage 5 = M3 ARM/WCET, stage 6 = M2/M3 ISR, stage 7 = M4.
 - Unchanged: the hardware-test rules in `AGENTS.md` (board identity, supply, e-stop, recovery, evidence) and the R-02 rule for powered closed loop.
 

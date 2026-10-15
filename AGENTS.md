@@ -6,7 +6,7 @@
 - 当前处于 **Stage 4**（MCU 引脚上的 PWM），2026-10-14 用户确认进入。进入下一个 Stage 前需用户明确确认，并在本节记录日期。
 - 已完成：Stage 0（工具链、safe-boot 固件、CI、host FOC 学习）；Stage 1（J-Link 启动安全检查和万用表复位检查，2026-10-14，记录见 `docs/evidence/lab_notes/stage1_boot_check.md`；R-18 波形仍留到 Stage 7 前）；Stage 2（TIM3 x4 编码器读数，每圈 4096 count、方向正确、Z 每圈一次同一 count、无丢数，2026-10-14，记录见 `docs/evidence/lab_notes/stage2_encoder.md`；线束 Z 实接 U7-3/PB3）；Stage 3（ADC2 读 IA/IC/VBUS/TEMP，零电流偏置 IA 1963.5、IC 1997.4 count，噪声 SD 6.3 count，VBUS≈0，换算公式在代码和记录中，2026-10-14，记录见 `docs/evidence/lab_notes/stage3_adc.md`）。
 - 各 Stage 的允许范围：
-  - Stage 1–4：仅逻辑供电（USB 或调试器 3.3 V），不接 DCBUS，SD1–SD4 保持低。Stage 1 只用 J-Link 对板上现有固件做暂停、单步、观察点、读寄存器和复位，不烧录。允许在 BSP 中实现 TIM3 编码器、ADC2 读数、TIM1 PWM 与 ADC 触发，只在 MCU 引脚上观测。
+  - Stage 1–4：仅逻辑供电（USB 或调试器 3.3 V），不接 DCBUS，SD1–SD4 保持低。Stage 1 只用 J-Link 对板上现有固件做暂停、单步、观察点、读寄存器和复位，不烧录。允许在 BSP 中实现 TIM3 编码器、ADC2 读数、TIM1 PWM 时基与 ADC 触发；TIM1 只在内部运行，见“安全默认值”。
   - Stage 5：允许把 `lib/foc` 编入测试固件（不接 ISR、不使能 PWM），做数值对比和 DWT 计时。
   - Stage 6：允许 FOC ISR 在不接 DCBUS、SD1–SD4 保持低的条件下运行。
   - Stage 7（首次带电）：尚未获准。进入前须满足“安全默认值”，用逻辑分析仪或示波器记录 R-18 的真实引脚波形，并由用户对 R-02 作出决定（先增加独立于 CPU 的硬件关断，或仅针对低压限流学习台架正式接受风险），记录在本文件和 `docs/plan/risk_list.md`。
@@ -34,7 +34,7 @@
 ## 安全默认值
 
 - 复位后立即保持 SD1/SD2/SD3/SD4 为低；D 相在本项目中始终禁用。
-- PWM 只能在 ADC 校准、编码器检查、故障检查和控制状态机全部通过后使能。例外：Stage 4–6 在不接 DCBUS 且 SD1–SD4 保持低时，允许 TIM1 在 MCU 引脚上输出 PWM 以供观测；SD 拉高或接入 DCBUS 时不适用。
+- PWM 只能在 ADC 校准、编码器检查、故障检查和控制状态机全部通过后使能。例外：Stage 4–6 在不接 DCBUS 且 SD1–SD4 保持低时，允许 TIM1 在内部运行（`CCER=0`、`MOE=0`），作为 ADC 触发和 ISR 时基；SD 拉高或接入 DCBUS 时不适用。无 DCBUS 时 PC0–PC3 必须保持模拟/不驱动（或输出低）：EG2104 VCC 为 0 V，IN 绝对最大值为 VCC+0.3 V（`HW-PWM-009`、R-19，2026-10-14 发现并经用户选择“仅寄存器验证”）。需要波形时只能把 TIM1 CH1–3 改到未连接的 PA8/PA9/PA10，须用户另行确认。
 - 软件故障处理不是功率级保护。带电闭环测试前必须具备独立于 CPU 的硬件关断路径，并验证其关断时间。
 - 看门狗只能由健康监督逻辑喂狗；不得在 FOC ISR 或无条件周期任务中喂狗。
 - 不得在没有限流电源、急停、目标板身份确认和恢复方案时执行功率测试或烧录。
