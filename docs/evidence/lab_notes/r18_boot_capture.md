@@ -1,6 +1,6 @@
 # R-18 — SD and PWM pins during power-up and reset (oscilloscope)
 
-Status: **pass** (2026-10-14): no net crossed 0.8 V on power-up, the reset button or SYSRESETREQ. R-18 is closed for firmware `1d39b8c`; repeat this procedure with the firmware used for Stage 7.
+Status: **pass** for firmware `1d39b8c` (2026-10-14, run 1) and for the Stage 7 firmware `f2460b5` (2026-10-15, run 2, below): no net crossed 0.8 V on power-up, the reset button or SYSRESETREQ, nor (run 2) while the arm key was written. R-18 is closed for `f2460b5`; a later firmware that changes how these pins are driven needs the procedure again.
 
 ## What is checked
 
@@ -70,3 +70,41 @@ Limits:
 - Without DCBUS the EG2104 is unpowered; this shows what the MCU drives onto the nets, which is what R-18 asks. It does not show gate-driver outputs.
 - Pulses shorter than about 10 ns (two samples at 200 MSa/s) could be missed.
 - No screenshots were saved.
+
+## Run 2 — Stage 7 firmware `f2460b5` (2026-10-15)
+
+Why again: `f2460b5` is the first firmware that can drive these nets (power stage on: PC0–PC2 to TIM1 AF2, then SD1–SD3 high). This run checks that it does not at boot, at reset, or when the arm key is written without DCBUS.
+
+| Item | Value |
+|---|---|
+| Board | UID `001D0050 42535013 20363130` (read at each J-Link session) |
+| Firmware | `f2460b5` (merged as `5f7cc0c`), flashed and verified (`verifybin`) |
+| Power | **USB only**, no DCBUS; J-Link target power off. VTref read 3.319–3.322 V over the eight step-4 sessions. With this wiring the board's LP5907 supplies the 3.3 V rail (`HW-PWR-003`); VTref alone does not show the source |
+| Scope | Same as run 1: DS100 Mini, ×10 / X10, 1 V/div, single trigger CHA rising at 0.8 V, 20 µs/div; probe ground H2-4 |
+
+Procedure per net (the user ran steps 1–3, Claude step 4):
+1. Idle level in auto mode.
+2. Power-up: USB unplugged and replugged (the board's only supply).
+3. SW1 reset.
+4. Debugger reset with the arm key: J-Link `r`, `g`, 3 s (boot, Stage 5 bench, offset calibration), arm key `0x41524D21` written to `foc_ctrl_cmd.arm`, held 2 s, GPIO registers read back, key cleared. Without DCBUS (VBUS about 50 mV) the guard must refuse to arm.
+
+Positive control: probe on H2-1 (3.3 V), USB replugged: **triggered**.
+
+| Net | Idle | Power-up | SW1 | Step 4 (reset + arm key) | Readback during step 4 |
+|---|---|---|---|---|---|
+| SD1 (U14-3) | 30 mV | no trigger | no trigger | no trigger | GPIOB ODR 0, GPIOA ODR 0, GPIOC MODER `0xFFFFFFFF` (PC0–PC15 analog) |
+| SD2 (U15-3) | 30 mV | no trigger | no trigger | no trigger | same |
+| SD3 (U16-3) | 30 mV | no trigger | no trigger | no trigger | same |
+| SD4 (U17-3) | 30 mV | no trigger | no trigger | no trigger | same |
+| PWMA (U14-2) | about 70 mV | no trigger | no trigger | no trigger | same |
+| PWMB (U15-2) | about 70 mV | no trigger | no trigger | no trigger | same |
+| PWMC (U16-2) | about 70 mV | no trigger | no trigger | no trigger | same |
+| PWMD (U17-2) | about 70 mV | no trigger | no trigger | no trigger | same |
+
+Raw files: `build/hil/stage7/` (`r18_steps.log`, `r18_step4_<net>.txt`, `uart_main.log`).
+
+Limits of run 2:
+- For SD1–SD3 the step-4 result was given by the user after SD4 was done (from memory, not one by one); PWMA–PWMD were confirmed one by one right after each run.
+- The PWM nets' idle levels and power-up/SW1 results were reported together as "same as before" (run 1: about 70 mV, no trigger).
+- One trial per event per net; no screenshots.
+- Without DCBUS the arm key cannot arm (VBUS window), so step 4 shows the refusal, not the switch-on itself. Switching on with DCBUS changes these nets by design (Stage 7).
