@@ -10,12 +10,23 @@ static bool inside(float x, float lo, float hi) {
 void power_guard_reset(power_guard_t* g) {
     g->vbus_ok_n = 0U;
     g->vbus_bad_n = 0U;
+    g->idle_n = 0U;
     g->request = false;
 }
 
 power_guard_out_t power_guard_step(power_guard_t* g, const power_guard_in_t* in) {
-    power_guard_out_t out = {.power_on = false, .trip = 0U};
+    power_guard_out_t out;
     float ib = -(in->ia + in->ic);
+
+    out.power_on = false;
+    out.trip = 0U;
+    if (in->idle) {
+        if (g->idle_n < POWER_GUARD_IDLE_PERIODS) {
+            g->idle_n++;
+        }
+    } else {
+        g->idle_n = 0U;
+    }
 
     if (in->calibrated
         && !(inside(in->ia, -POWER_GUARD_I_TRIP_A, POWER_GUARD_I_TRIP_A)
@@ -43,7 +54,8 @@ power_guard_out_t power_guard_step(power_guard_t* g, const power_guard_in_t* in)
 
     if (!in->arm_key || out.trip != 0U) {
         g->request = false;
-    } else if (!g->request && in->calibrated && in->idle && g->vbus_ok_n >= POWER_GUARD_VBUS_ARM_PERIODS) {
+    } else if (!g->request && in->calibrated && g->idle_n >= POWER_GUARD_IDLE_PERIODS
+               && g->vbus_ok_n >= POWER_GUARD_VBUS_ARM_PERIODS) {
         g->request = true;
     }
     out.power_on = g->request;

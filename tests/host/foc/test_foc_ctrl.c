@@ -1,0 +1,189 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+
+#include <math.h>
+
+#include "analog.h"
+#include "foc/foc_transform.h"
+#include "foc_ctrl.h"
+#include "foc_test.h"
+#include "power_guard.h"
+
+/* Supply a valid zero-current sample at the requested bus voltage. */
+static pwm_adc_sample_t sample_at(float vbus) {
+    pwm_adc_sample_t sample = {
+        .ia_code = 2048U,
+        .ic_code = 2048U,
+        .vbus_code = (uint16_t)(vbus / ANALOG_VBUS_V_PER_CODE + 0.5f),
+    };
+
+    return sample;
+}
+
+/* Calibrate the production controller with alternating low and high codes. */
+static foc_ctrl_snapshot_t calibrate_codes(uint16_t ia_lo, uint16_t ia_hi, uint16_t ic_lo, uint16_t ic_hi) {
+    foc_ctrl_cmd = (foc_ctrl_cmd_t){0};
+    foc_ctrl_init();
+    pwm_adc_sample_t sample = sample_at(15.0f);
+    pwm_adc_cmd_t cmd;
+    foc_ctrl_snapshot_t snap;
+
+    for (uint32_t n = 0U; n < FOC_CTRL_CAL_SAMPLES; n++) {
+        sample.ia_code = (n & 1U) != 0U ? ia_hi : ia_lo;
+        sample.ic_code = (n & 1U) != 0U ? ic_hi : ic_lo;
+        foc_ctrl_step(&sample, &cmd);
+        CHECK(!cmd.power_on && cmd.trip == 0U);
+        CHECK(cmd.a == 0.5f && cmd.b == 0.5f && cmd.c == 0.5f);
+    }
+    /* Acceptance becomes usable on the first step after all calibration samples. */
+    foc_ctrl_step(&sample, &cmd);
+    foc_ctrl_snapshot(&snap);
+    return snap;
+}
+
+/* Accept both offset-deviation boundaries and the minimum nonzero spread. */
+static void test_calibration_acceptance_boundaries(void) {
+    foc_ctrl_snapshot_t snap = calibrate_codes(2246U, 2249U, 1846U, 1849U);
+
+    CHECK(snap.calibrated && !snap.cal_failed);
+    CHECK(snap.ia_offset == 2247.5f && snap.ic_offset == 1847.5f);
+    CHECK(snap.ia_spread == 3U && snap.ic_spread == 3U);
+    snap = calibrate_codes(2047U, 2049U, 2047U, 2049U);
+    CHECK(snap.calibrated && !snap.cal_failed);
+    CHECK(snap.ia_spread == FOC_CTRL_CAL_MIN_SPREAD_CODES);
+    CHECK(snap.ic_spread == FOC_CTRL_CAL_MIN_SPREAD_CODES);
+}
+
+/* Reject either stuck, railed or implausible sensor permanently, without false current trips. */
+static void test_calibration_rejection_is_sticky(void) {
+    const uint16_t cases[][4] = {
+        {2048U, 2048U, 2047U, 2049U}, /* IA stuck at midscale */
+        {2047U, 2049U, 2048U, 2048U}, /* IC stuck at midscale */
+        {2047U, 2048U, 2047U, 2049U}, /* IA spread below minimum */
+        {2047U, 2049U, 2047U, 2048U}, /* IC spread below minimum */
+        {0U, 2U, 2047U, 2049U},       /* IA near the low rail */
+        {2047U, 2049U, 4093U, 4095U}, /* IC near the high rail */
+        {2247U, 2250U, 2047U, 2049U}, /* IA just above maximum offset */
+        {2047U, 2049U, 1845U, 1848U}, /* IC just below minimum offset */
+    };
+
+    for (size_t k = 0U; k < sizeof(cases) / sizeof(cases[0]); k++) {
+        foc_ctrl_snapshot_t snap = calibrate_codes(cases[k][0], cases[k][1], cases[k][2], cases[k][3]);
+        pwm_adc_sample_t sample = sample_at(15.0f);
+        pwm_adc_cmd_t cmd;
+
+        CHECK(snap.cal_failed && !snap.calibrated);
+        foc_ctrl_cmd.arm = FOC_CTRL_ARM_KEY;
+        foc_ctrl_cmd.mode = FOC_MODE_DC;
+        foc_ctrl_cmd.v_mv = 1000U;
+        for (uint32_t n = 0U; n < FOC_CTRL_CAL_SAMPLES + POWER_GUARD_VBUS_ARM_PERIODS; n++) {
+            foc_ctrl_step(&sample, &cmd);
+            CHECK(!cmd.power_on && cmd.trip == 0U);
+            CHECK(cmd.a == 0.5f && cmd.b == 0.5f && cmd.c == 0.5f);
+        }
+        foc_ctrl_snapshot(&snap);
+        CHECK(snap.cal_failed && !snap.calibrated && snap.steps == 0U);
+    }
+}
+
+/* Refused modes cannot arm, and returning to explicit idle still needs 20 steps. */
+static void test_unknown_mode_cannot_arm(void) {
+    (void)calibrate_codes(2047U, 2049U, 2047U, 2049U);
+    pwm_adc_sample_t sample = sample_at(15.0f);
+    pwm_adc_cmd_t cmd;
+    foc_ctrl_snapshot_t snap;
+
+    foc_ctrl_cmd.arm = FOC_CTRL_ARM_KEY;
+    foc_ctrl_cmd.mode = UINT32_MAX;
+    for (uint32_t n = 0U; n < POWER_GUARD_VBUS_ARM_PERIODS; n++) {
+        foc_ctrl_step(&sample, &cmd);
+        CHECK(!cmd.power_on && cmd.trip == 0U);
+        CHECK(cmd.a == 0.5f && cmd.b == 0.5f && cmd.c == 0.5f);
+    }
+    foc_ctrl_snapshot(&snap);
+    CHECK(snap.mode_refused && snap.mode == FOC_MODE_IDLE);
+    foc_ctrl_cmd.mode = FOC_MODE_IDLE;
+    for (uint32_t n = 0U; n < POWER_GUARD_IDLE_PERIODS - 1U; n++) {
+        foc_ctrl_step(&sample, &cmd);
+        CHECK(!cmd.power_on);
+    }
+    foc_ctrl_step(&sample, &cmd);
+    CHECK(cmd.power_on);
+}
+
+/* Recover the applied alpha/beta vector from the returned duties and actual supply. */
+static foc_ab_t applied_vector(const pwm_adc_cmd_t* cmd, float vbus) {
+    foc_abc_t volts = {.a = cmd->a * vbus, .b = cmd->b * vbus, .c = cmd->c * vbus};
+
+    return foc_clarke(volts);
+}
+
+/* A sudden supply rise must preserve the one-volt vector despite lagging telemetry. */
+static void test_duty_scale_uses_raw_vbus(void) {
+    (void)calibrate_codes(2047U, 2049U, 2047U, 2049U);
+    pwm_adc_sample_t sample = sample_at(16.5f);
+    pwm_adc_cmd_t cmd;
+    foc_ctrl_snapshot_t snap;
+
+    foc_ctrl_cmd.mode = FOC_MODE_VOLTAGE;
+    foc_ctrl_step(&sample, &cmd);
+    foc_ctrl_snapshot(&snap);
+    CHECK(snap.vbus - snap.vbus_f > 1.0f);
+    foc_ab_t vector = applied_vector(&cmd, snap.vbus);
+    CHECK(fabsf(vector.alpha - 1.0f) < 1e-5f);
+    CHECK(fabsf(vector.beta) < 1e-5f);
+
+    /* The no-DCBUS learning mode retains its nominal 12 V scale. */
+    sample = sample_at(0.0f);
+    foc_ctrl_step(&sample, &cmd);
+    vector = applied_vector(&cmd, 12.0f);
+    CHECK(fabsf(vector.alpha - 1.0f) < 1e-5f);
+}
+
+/* Command edits during a capture cannot alter its amplitude, direction or reported metadata. */
+static void test_step_capture_latches_vector(void) {
+    (void)calibrate_codes(2047U, 2049U, 2047U, 2049U);
+    pwm_adc_sample_t sample = sample_at(15.0f);
+    pwm_adc_cmd_t cmd;
+    foc_ctrl_snapshot_t snap;
+    uint32_t on_steps = 0U;
+
+    foc_ctrl_cmd.mode = FOC_MODE_STEP;
+    foc_ctrl_cmd.v_mv = 800U;
+    foc_ctrl_cmd.theta_e = 1024U;
+    foc_ctrl_cmd.step_seq = 1U;
+    for (uint32_t n = 0U; n < FOC_CTRL_CAPTURE_LEN; n++) {
+        foc_ctrl_step(&sample, &cmd);
+        foc_ctrl_snapshot(&snap);
+        if (n < FOC_CTRL_CAPTURE_LEN - 1U) {
+            CHECK(snap.theta_e_count == 1024U);
+        }
+        if (snap.v_d > 0.0f) {
+            foc_ab_t vector = applied_vector(&cmd, snap.vbus);
+
+            on_steps++;
+            CHECK(fabsf(snap.v_d - 0.8f) < 1e-6f);
+            CHECK(fabsf(vector.alpha) < 1e-5f);
+            CHECK(fabsf(vector.beta - 0.8f) < 1e-5f);
+        }
+        foc_ctrl_cmd.v_mv = 200U;
+        foc_ctrl_cmd.theta_e = 0U;
+    }
+    CHECK(on_steps == FOC_CTRL_CAPTURE_ON);
+    const foc_ctrl_capture_t* capture = foc_ctrl_capture_get();
+
+    CHECK(capture != NULL);
+    if (capture != NULL) {
+        CHECK(capture->v_mv == 800U && capture->theta_e == 1024U && capture->seq == 1U);
+    }
+    foc_ctrl_capture_release();
+}
+
+/* Run production-control regressions with board constants and C11 atomics supplied by host stubs. */
+int main(void) {
+    test_calibration_acceptance_boundaries();
+    test_calibration_rejection_is_sticky();
+    test_unknown_mode_cannot_arm();
+    test_duty_scale_uses_raw_vbus();
+    test_step_capture_latches_vector();
+    return foc_test_result("test_foc_ctrl");
+}

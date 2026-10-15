@@ -119,6 +119,10 @@ static atomic_t powered;
 /* ISR entries; single writer (the ISR), 32-bit reads are atomic. */
 static volatile uint32_t isr_total;
 
+/* Written by the 10 ms system-timer ISR; independent of telemetry and its capture dump. */
+static uint32_t supervise_last_total;
+static atomic_t supervisor_trip;
+
 /*
  * Forced-overrun test (Stage 6): the debugger writes test_spin_cycles, then
  * test_spin_count; the next test_spin_count ISRs busy-wait until they have
@@ -128,20 +132,17 @@ static volatile uint32_t test_spin_cycles;
 static volatile uint32_t test_spin_count;
 
 static void stats_reset_locked(void) {
-    pwm_adc_stats_t keep = stats;
-
-    stats = (pwm_adc_stats_t){
-        .period_min = UINT32_MAX,
-        .cnt_min = UINT16_MAX,
-        .ccr = {keep.ccr[0], keep.ccr[1], keep.ccr[2]},
-        .power_on = keep.power_on,
-        .power_ons = keep.power_ons,
-        .overruns = keep.overruns,
-        .missed = keep.missed,
-        .fault = keep.fault,
-        .dma_errors = keep.dma_errors,
-        .adc_overruns = keep.adc_overruns,
-    };
+    /* This also runs on a reset request in the FOC ISR; avoid a byte-loop memset. */
+    stats.isr_count = 0U;
+    stats.period_min = UINT32_MAX;
+    stats.period_max = 0U;
+    stats.exec_max = 0U;
+    stats.cnt_min = UINT16_MAX;
+    stats.cnt_max = 0U;
+    stats.counting_up = 0U;
+    stats.ia_sum = 0U;
+    stats.ic_sum = 0U;
+    /* All remaining fields are sticky across reporting windows. */
 }
 
 static uint16_t duty_to_ccr(float duty) {
@@ -218,13 +219,13 @@ ISR_DIRECT_DECLARE(dma_isr) {
     bool overrun = LL_ADC_IsActiveFlag_OVR(ADC2) != 0U;
     isr_total = isr_total + 1U;
 
-    pwm_adc_sample_t sample = {
-        .ia_code = adc_buf[0],
-        .ic_code = adc_buf[1],
-        .vbus_code = adc_buf[2],
-        .enc_count = encoder_count(),
-        .power_on = atomic_get(&powered) != 0,
-    };
+    pwm_adc_sample_t sample;
+
+    sample.ia_code = adc_buf[0];
+    sample.ic_code = adc_buf[1];
+    sample.vbus_code = adc_buf[2];
+    sample.enc_count = encoder_count();
+    sample.power_on = atomic_get(&powered) != 0;
 
     LL_DMA_ClearFlag_GI1(DMA2);
     if (overrun) {
@@ -239,12 +240,24 @@ ISR_DIRECT_DECLARE(dma_isr) {
         stats.dma_errors++;
         fault_latch(PWM_ADC_FAULT_DMA_ERROR);
     }
+    if (overrun) {
+        stats.adc_overruns++;
+        /* After an overrun the DMA buffer may hold stale or shifted [IA, IC, VBUS]. */
+        fault_latch(PWM_ADC_FAULT_ADC_OVERRUN);
+    }
+    if (have_last_entry && sample.power_on && entry - last_entry > PWM_ADC_GAP_FAULT_CYCLES) {
+        fault_latch(PWM_ADC_FAULT_ISR_GAP);
+    }
     if (stats.fault == 0U) {
         pwm_adc_cmd_t cmd;
 
         step_fn(&sample, &cmd);
         if (cmd.trip != 0U) {
             fault_latch(cmd.trip);
+        } else if (!(cmd.a >= 0.0f && cmd.a <= 1.0f) || !(cmd.b >= 0.0f && cmd.b <= 1.0f)
+                   || !(cmd.c >= 0.0f && cmd.c <= 1.0f)) {
+            /* Reject NaNs too: never apply an invalid duty or its requested power transition. */
+            fault_latch(PWM_ADC_FAULT_NUMERIC);
         } else {
             set_ccr(duty_to_ccr(cmd.a), duty_to_ccr(cmd.b), duty_to_ccr(cmd.c));
             if (cmd.power_on && !sample.power_on) {
@@ -273,7 +286,6 @@ ISR_DIRECT_DECLARE(dma_isr) {
     stats.counting_up += up ? 1U : 0U;
     stats.ia_sum += sample.ia_code;
     stats.ic_sum += sample.ic_code;
-    stats.adc_overruns += overrun ? 1U : 0U;
 
     if (test_spin_count > 0U) {
         test_spin_count = test_spin_count - 1U;
@@ -455,28 +467,49 @@ static void dma2_setup(void) {
 }
 
 bool pwm_adc_outputs_safe(void) {
-    uint32_t gate_moder = LL_GPIO_ReadReg(GPIOC, MODER) & MODER_PC0_PC2_MASK;
+    for (uint32_t attempt = 0U; attempt < 3U; attempt++) {
+        bool before = atomic_get(&powered) != 0;
+        uint32_t gate_moder = LL_GPIO_ReadReg(GPIOC, MODER) & MODER_PC0_PC2_MASK;
+        bool fixed_safe = fixed_pins_safe();
+        bool sd_low =
+            LL_GPIO_IsOutputPinSet(SD1_PORT, SD1_PIN) == 0U && (LL_GPIO_ReadOutputPort(SD23_PORT) & SD23_PINS) == 0U;
+        bool after = atomic_get(&powered) != 0;
 
-    if (!fixed_pins_safe()) {
-        return false;
+        if (before != after) {
+            continue;
+        }
+        return fixed_safe && (before ? gate_moder == MODER_PC0_PC2_AF : gate_moder == MODER_PC0_PC2_ANALOG && sd_low);
     }
-    if (atomic_get(&powered) != 0) {
-        return gate_moder == MODER_PC0_PC2_AF;
-    }
-    return gate_moder == MODER_PC0_PC2_ANALOG && LL_GPIO_IsOutputPinSet(SD1_PORT, SD1_PIN) == 0U
-           && (LL_GPIO_ReadOutputPort(SD23_PORT) & SD23_PINS) == 0U;
+    return false;
 }
 
 /*
- * Thread context. The ISR cannot be running while a thread runs (single
- * core), so once its interrupt is disabled nothing can switch the power
- * stage on again; then the stage goes off and the timer stops.
+ * Thread or system-timer ISR context. Disable the zero-latency DMA IRQ
+ * first: on this single core it can no longer preempt and switch power
+ * back on. This shutdown is final until reset; nothing restarts TIM1.
  */
 void pwm_adc_stop(void) {
     irq_disable(DMA2_Channel1_IRQn);
     power_off();
     LL_TIM_DisableAllOutputs(TIM1);
     LL_TIM_DisableCounter(TIM1);
+}
+
+/* Stop permanently if fewer than 150 FOC ISRs ran since the last 10 ms tick; never log here. */
+void pwm_adc_supervise(void) {
+    uint32_t now = isr_total;
+    uint32_t ran = now - supervise_last_total;
+
+    supervise_last_total = now;
+    if (atomic_get(&powered) != 0 && ran < PWM_ADC_SUPERVISE_MIN_ISRS) {
+        pwm_adc_stop();
+        (void)atomic_set(&supervisor_trip, 1);
+    }
+}
+
+/* Return the sticky timer-supervisor shutdown indication, cleared only by reset. */
+bool pwm_adc_supervisor_tripped(void) {
+    return atomic_get(&supervisor_trip) != 0;
 }
 
 int pwm_adc_init(pwm_adc_step_fn step) {

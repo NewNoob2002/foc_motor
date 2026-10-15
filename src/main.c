@@ -58,6 +58,14 @@ static struct k_thread report_thread;
 /* One capture line is about 60 characters, 0.7 ms at 921600 baud; the pause keeps the 1 KiB log buffer from dropping. */
 #define CAPTURE_LINE_PAUSE_MS 2
 
+/* Supervise FOC progress in system-timer ISR context, independent of report-thread delays. */
+static void supervise_expiry(struct k_timer* timer) {
+    ARG_UNUSED(timer);
+    pwm_adc_supervise();
+}
+
+K_TIMER_DEFINE(supervise_timer, supervise_expiry, NULL);
+
 static const char* const mode_names[] = {
     [FOC_MODE_IDLE] = "idle (zero vector)",
     [FOC_MODE_DC] = "dc (fixed vector, ramped)",
@@ -99,6 +107,13 @@ static __noinline void report(uint32_t n, const pwm_adc_stats_t* st, bool timing
             after_top_min / 100U, after_top_min % 100U, after_top_max / 100U, after_top_max % 100U, st->counting_up);
     LOG_INF("  overruns %u, missed %u, fault 0x%x, DMA errors %u, ADC overruns %u; CCR %u %u %u", st->overruns,
             st->missed, st->fault, st->dma_errors, st->adc_overruns, st->ccr[0], st->ccr[1], st->ccr[2]);
+    if (fc->cal_failed) {
+        LOG_ERR("  current calibration FAILED: offsets IA %d.%03d IC %d.%03d counts; spreads IA %u IC %u counts; "
+                "power remains disabled until reset",
+                milli(fc->ia_offset) / 1000, milli(fc->ia_offset) % 1000, milli(fc->ic_offset) / 1000,
+                milli(fc->ic_offset) % 1000, fc->ia_spread, fc->ic_spread);
+        return;
+    }
     if (!fc->calibrated) {
         LOG_INF("  calibrating current offsets");
         return;
@@ -158,6 +173,7 @@ static void report_loop(void* p1, void* p2, void* p3) {
         LOG_ERR("pwm_adc_init failed: %d", ret);
         return;
     }
+    k_timer_start(&supervise_timer, K_MSEC(10), K_MSEC(10));
     LOG_INF("FOC ISR on: TIM1 ARR %u (20 kHz center-aligned, RCR 1), ADC2 [IA, IC, VBUS] on TRGO2 at the top; "
             "offset calibration %u periods; power stage off",
             PWM_ARR, FOC_CTRL_CAL_SAMPLES);
@@ -166,20 +182,15 @@ static void report_loop(void* p1, void* p2, void* p3) {
 
     /* Drop the start-up window. */
     (void)pwm_adc_stats_take(&st);
-    uint32_t isr_seen = pwm_adc_isr_total();
+    bool supervisor_reported = false;
 
     for (uint32_t n = 1;; n++) {
         k_msleep(ROT_PERIOD_MS);
 
-        /* Supervisor: 2000 ISRs are due in 100 ms; none while the power stage is on means nothing can trip. */
-        uint32_t isr_now = pwm_adc_isr_total();
-
-        if (isr_now == isr_seen && pwm_adc_power_is_on()) {
-            pwm_adc_stop();
-            LOG_ERR("FOC ISR stopped while the power stage was on; power stage off, timer stopped");
-            return;
+        if (!supervisor_reported && pwm_adc_supervisor_tripped()) {
+            LOG_ERR("FOC ISR progress below 150 per 10 ms while powered; power stage off, timer stopped until reset");
+            supervisor_reported = true;
         }
-        isr_seen = isr_now;
         if (!pwm_adc_outputs_safe()) {
             pwm_adc_stop();
             LOG_ERR("pin invariant broken (PC0-PC3, SD1-SD4 or CCER); power stage off, outputs off, timer stopped");

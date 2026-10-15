@@ -53,6 +53,14 @@ foc_host_executable(test_current test_current.c)
 foc_host_executable(test_power_guard test_power_guard.c)
 target_sources(test_power_guard PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../../src/power_guard.c)
 target_include_directories(test_power_guard PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../../src)
+# Exercise production control with board constants and standard C11 atomics, without a Zephyr installation.
+foc_host_executable(test_foc_ctrl test_foc_ctrl.c)
+target_sources(test_foc_ctrl PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../../src/foc_ctrl.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../../src/power_guard.c)
+target_include_directories(test_foc_ctrl PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/stubs
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../../src)
 foc_host_executable(sim_current_loop sim/sim_current_loop.c)
 foc_host_executable(sim_svpwm sim/sim_svpwm.c)
 foc_host_executable(sim_speed_loop sim/sim_speed_loop.c)
@@ -63,6 +71,7 @@ foc_host_test(foc_host_smoke)
 foc_host_test(test_transform)
 foc_host_test(test_current)
 foc_host_test(test_power_guard)
+foc_host_test(test_foc_ctrl)
 add_test(NAME vec_compare_selftest COMMAND vec_compare --selftest)
 set_tests_properties(vec_compare_selftest PROPERTIES ENVIRONMENT "ASAN_OPTIONS=detect_leaks=0")
 if(FOC_EXERCISES)

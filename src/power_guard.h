@@ -13,8 +13,10 @@
  * - The request turns on only when all of these hold in the same step:
  *   the arm key is set, the current offsets are calibrated, VBUS has been
  *   inside [POWER_GUARD_VBUS_ARM_MIN_V, POWER_GUARD_VBUS_ARM_MAX_V] for
- *   POWER_GUARD_VBUS_ARM_PERIODS steps in a row, the zero vector is
- *   requested (idle), and nothing trips.
+ *   POWER_GUARD_VBUS_ARM_PERIODS steps in a row, explicitly allowed idle
+ *   has held for POWER_GUARD_IDLE_PERIODS consecutive steps, and nothing
+ *   trips. This lets zero duty propagate through CCR preload before power
+ *   switches on; any non-idle step restarts the idle count.
  * - The request turns off when the key is cleared or anything trips; it
  *   turns on again only by meeting all the conditions again.
  * - Overcurrent: once calibrated, |ia|, |ic| or |ib| = |ia + ic| above
@@ -37,6 +39,7 @@
 #define POWER_GUARD_VBUS_TRIP_MAX_V   17.0f
 #define POWER_GUARD_VBUS_ARM_PERIODS  2000U /* 100 ms at 20 kHz */
 #define POWER_GUARD_VBUS_TRIP_PERIODS 3U
+#define POWER_GUARD_IDLE_PERIODS      20U /* 1 ms at 20 kHz; flush the previous duty */
 
 /* Largest voltage vector the control may apply while the stage is on. */
 #define POWER_GUARD_V_MAX             1.0f
@@ -51,13 +54,14 @@ typedef struct {
     float vbus;      /* V */
     bool calibrated; /* current offsets measured */
     bool arm_key;    /* the arm command holds the key */
-    bool idle;       /* the control requests the zero vector */
+    bool idle;       /* FOC_MODE_IDLE explicitly commanded and allowed, not a refused fallback */
     bool power_on;   /* the power stage is on now (BSP state) */
 } power_guard_in_t;
 
 typedef struct {
     uint32_t vbus_ok_n;  /* steps in a row inside the arm window */
     uint32_t vbus_bad_n; /* steps in a row outside the trip window while on */
+    uint32_t idle_n;     /* consecutive idle steps, saturating at POWER_GUARD_IDLE_PERIODS */
     bool request;
 } power_guard_t;
 

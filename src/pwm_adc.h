@@ -39,6 +39,12 @@
 /* Overruns in a row that latch the fault. */
 #define PWM_ADC_OVERRUN_FAULT_COUNT 3U
 
+/* A powered ISR gap above two 8500-cycle PWM periods is a fault. */
+#define PWM_ADC_GAP_FAULT_CYCLES    17000U
+
+/* Minimum progress per 10 ms timer tick (200 ISR entries expected). */
+#define PWM_ADC_SUPERVISE_MIN_ISRS  150U
+
 /*
  * Sticky fault reasons (pwm_adc_stats_t.fault). A fault switches the power
  * stage off, sets MOE = 0 and 50 % duty, and stops the control steps until
@@ -49,6 +55,9 @@
 #define PWM_ADC_FAULT_OVERCURRENT   0x04U /* from the control step (power_guard) */
 #define PWM_ADC_FAULT_VBUS          0x08U /* from the control step (power_guard) */
 #define PWM_ADC_FAULT_PINS          0x10U /* pin invariant broken when switching on */
+#define PWM_ADC_FAULT_ADC_OVERRUN   0x20U /* OVR at ISR entry, DMA samples may be stale or shifted */
+#define PWM_ADC_FAULT_NUMERIC       0x40U /* a duty is outside [0, 1], including NaN */
+#define PWM_ADC_FAULT_ISR_GAP       0x80U /* powered ISR-entry gap exceeds PWM_ADC_GAP_FAULT_CYCLES */
 
 /*
  * High-side duty limits. The bootstrap capacitor only charges while the low
@@ -70,7 +79,7 @@ typedef struct {
 
 /* What the control step returns each period. */
 typedef struct {
-    float a; /* high-side duty per phase; clamped to [PWM_ADC_DUTY_MIN, PWM_ADC_DUTY_MAX] */
+    float a; /* high-side duty per phase; must be in [0, 1], then clamped to the bootstrap limits */
     float b;
     float c;
     bool power_on; /* wanted power-stage state; the ISR switches when it differs */
@@ -117,21 +126,32 @@ int pwm_adc_init(pwm_adc_step_fn step);
  * are enabled in CCER (CH2N could reach PB0 = SD1); and either the power
  * stage is off with PC0-PC2 analog and SD1-SD3 low, or it is on with
  * PC0-PC2 in alternate-function mode. If not, the caller must call
- * pwm_adc_stop().
+ * pwm_adc_stop(). Reads the power state before and after the registers;
+ * retries a state change at most three times, then returns false.
  */
 bool pwm_adc_outputs_safe(void);
 
-/* Switches the power stage off, disables all TIM1 outputs (MOE = 0) and stops the counter. */
+/*
+ * Disable the DMA IRQ first, switch power off, clear MOE and stop TIM1.
+ * May run in thread or system-timer ISR context. Final until reset: do not
+ * call pwm_adc_init() again after a stop.
+ */
 void pwm_adc_stop(void);
+
+/*
+ * Check FOC progress from the system-timer ISR every 10 ms without logging.
+ * If powered and fewer than PWM_ADC_SUPERVISE_MIN_ISRS entries occurred,
+ * stop permanently and latch the supervisor indication.
+ */
+void pwm_adc_supervise(void);
+
+/* Return whether the timer supervisor tripped; sticky until reset. */
+bool pwm_adc_supervisor_tripped(void);
 
 /* True while the power stage is on. */
 bool pwm_adc_power_is_on(void);
 
-/*
- * ISR entries since init (wraps). A supervisor that sees it stand still
- * while the power stage is on must call pwm_adc_stop(): without the ISR
- * nothing trips, and TIM1 keeps switching at the last duty.
- */
+/* ISR entries since init (wraps); the independent 10 ms supervisor checks progress. */
 uint32_t pwm_adc_isr_total(void);
 
 /*

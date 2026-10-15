@@ -5,7 +5,10 @@
  * (pwm_adc_init(foc_ctrl_step)).
  *
  * The first FOC_CTRL_CAL_SAMPLES periods measure the IA/IC zero-current
- * offsets (zero vector). Then the mode in foc_ctrl_cmd runs:
+ * offsets (zero vector). Both means must be within FOC_CTRL_CAL_MAX_DEV_CODES
+ * of midscale and both spreads at least FOC_CTRL_CAL_MIN_SPREAD_CODES.
+ * Rejection latches cal_failed until reset: no arming or current trips,
+ * and the zero vector keeps running. Then, if accepted, foc_ctrl_cmd runs:
  *
  * - FOC_MODE_IDLE: zero vector (all duties 50 %). The default.
  * - FOC_MODE_DC: a vector of cmd.v_mv at the fixed electrical angle
@@ -16,14 +19,17 @@
  *   FOC_CTRL_CAPTURE_LEN periods: FOC_CTRL_CAPTURE_PRE periods of zero
  *   vector, FOC_CTRL_CAPTURE_ON periods of cmd.v_mv at cmd.theta_e (no
  *   ramp), then zero again, recording IA and IC every period (inductance
- *   from the current rise).
+ *   from the current rise). Amplitude and angle are latched at capture
+ *   start; later command edits do not change the running capture.
  * - FOC_MODE_VOLTAGE, FOC_MODE_CURRENT: the Stage 6 modes (1 V at the
  *   encoder angle; the current loop). Only while the power stage is off;
  *   with it on they run as FOC_MODE_IDLE (snapshot.mode_refused).
  *
  * The power stage (Stage 7) switches on only through src/power_guard.c:
  * cmd.arm = FOC_CTRL_ARM_KEY, offsets calibrated, VBUS 14.0-16.5 V for
- * 100 ms, mode FOC_MODE_IDLE. cmd.arm = 0 switches it off. While it is on,
+ * 100 ms, explicitly allowed FOC_MODE_IDLE for 20 consecutive periods
+ * (1 ms, so the previous duty clears CCR preload). Unknown or refused
+ * modes run the zero vector but cannot arm. cmd.arm = 0 switches it off. While it is on,
  * the vector is at most POWER_GUARD_V_MAX, |I| above 2 A or VBUS outside
  * 12-17 V trips (latched until reset).
  *
@@ -40,17 +46,19 @@
 #include "pwm_adc.h"
 
 /* 4096 periods at 20 kHz = 205 ms of zero-current samples. */
-#define FOC_CTRL_CAL_SAMPLES 4096U
+#define FOC_CTRL_CAL_SAMPLES          4096U
+#define FOC_CTRL_CAL_MAX_DEV_CODES    200
+#define FOC_CTRL_CAL_MIN_SPREAD_CODES 2
 
 /* "ARM!" in ASCII. Any other value of cmd.arm keeps or switches the power stage off. */
-#define FOC_CTRL_ARM_KEY     0x41524D21U
+#define FOC_CTRL_ARM_KEY              0x41524D21U
 
 /* Largest cmd.v_mv used; larger values are clamped. */
-#define FOC_CTRL_V_MAX_MV    1000U
+#define FOC_CTRL_V_MAX_MV             1000U
 
-#define FOC_CTRL_CAPTURE_LEN 256U /* 12.8 ms */
-#define FOC_CTRL_CAPTURE_PRE 16U
-#define FOC_CTRL_CAPTURE_ON  128U /* 6.4 ms */
+#define FOC_CTRL_CAPTURE_LEN          256U /* 12.8 ms */
+#define FOC_CTRL_CAPTURE_PRE          16U
+#define FOC_CTRL_CAPTURE_ON           128U /* 6.4 ms */
 
 typedef enum {
     FOC_MODE_IDLE = 0,
@@ -75,11 +83,14 @@ typedef struct {
     uint32_t steps; /* control steps after calibration */
     uint32_t mode;  /* foc_mode_t that ran */
     bool calibrated;
+    bool cal_failed;   /* plausibility rejection, sticky until reset */
     bool power_on;     /* power stage on during this step (BSP state) */
     bool power_req;    /* power_guard request */
     bool mode_refused; /* the commanded mode is not allowed now; FOC_MODE_IDLE ran */
     float ia_offset;   /* ADC counts */
     float ic_offset;
+    uint16_t ia_spread; /* max - min ADC codes during calibration */
+    uint16_t ic_spread;
     uint32_t enc_count;     /* raw TIM3 count of this step */
     uint32_t theta_e_count; /* electrical angle used, 0..4095 */
     float vbus;             /* V */

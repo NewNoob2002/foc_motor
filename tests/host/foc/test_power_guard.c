@@ -44,6 +44,42 @@ static void test_arms_after_vbus_settles(void) {
     CHECK(out.trip == 0U);
 }
 
+/* Require 20 idle steps even when VBUS, calibration and the key are ready. */
+static void test_arming_waits_for_idle(void) {
+    power_guard_t g;
+    power_guard_in_t in = good_in();
+
+    power_guard_reset(&g);
+    in.idle = false;
+    CHECK(!run(&g, &in, POWER_GUARD_VBUS_ARM_PERIODS).power_on);
+    CHECK(g.vbus_ok_n == POWER_GUARD_VBUS_ARM_PERIODS);
+    CHECK(g.idle_n == 0U);
+    in.idle = true;
+    CHECK(!run(&g, &in, POWER_GUARD_IDLE_PERIODS - 1U).power_on);
+    CHECK(g.idle_n == POWER_GUARD_IDLE_PERIODS - 1U);
+    CHECK(power_guard_step(&g, &in).power_on);
+    CHECK(run(&g, &in, 100U).power_on);
+    CHECK(g.idle_n == POWER_GUARD_IDLE_PERIODS);
+}
+
+/* A single non-idle period discards all preceding idle time. */
+static void test_non_idle_restarts_idle_count(void) {
+    power_guard_t g;
+    power_guard_in_t in = good_in();
+
+    power_guard_reset(&g);
+    in.arm_key = false;
+    CHECK(!run(&g, &in, POWER_GUARD_VBUS_ARM_PERIODS).power_on);
+    CHECK(g.idle_n == POWER_GUARD_IDLE_PERIODS);
+    in.idle = false;
+    in.arm_key = true;
+    CHECK(!power_guard_step(&g, &in).power_on);
+    CHECK(g.idle_n == 0U);
+    in.idle = true;
+    CHECK(!run(&g, &in, POWER_GUARD_IDLE_PERIODS - 1U).power_on);
+    CHECK(power_guard_step(&g, &in).power_on);
+}
+
 static void test_each_condition_blocks_arming(void) {
     power_guard_t g;
     power_guard_in_t in;
@@ -98,7 +134,8 @@ static void test_key_cleared_disarms_and_rearm_needs_conditions(void) {
     in.idle = false;
     CHECK(!run(&g, &in, 10U).power_on); /* not idle: stays off */
     in.idle = true;
-    CHECK(power_guard_step(&g, &in).power_on); /* VBUS stayed good, so the count is still full */
+    CHECK(!run(&g, &in, POWER_GUARD_IDLE_PERIODS - 1U).power_on);
+    CHECK(power_guard_step(&g, &in).power_on); /* VBUS stayed good; idle has now settled too. */
 }
 
 /* Once on, leaving idle (a test vector) keeps the stage on. */
@@ -181,6 +218,8 @@ static void test_vbus_trip_needs_three_in_a_row_while_on(void) {
 
 int main(void) {
     test_arms_after_vbus_settles();
+    test_arming_waits_for_idle();
+    test_non_idle_restarts_idle_count();
     test_each_condition_blocks_arming();
     test_vbus_dip_restarts_count();
     test_key_cleared_disarms_and_rearm_needs_conditions();
