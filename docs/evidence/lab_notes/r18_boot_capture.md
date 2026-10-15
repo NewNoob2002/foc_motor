@@ -26,7 +26,7 @@ Pins 2 (IN) and 3 (SD) are next to each other and pin 1 is VCC: touch only the i
 | Board | UID `001D0050 42535013 20363130` |
 | Firmware on the board | `1d39b8c` (stage 4: TIM1 internal, outputs disabled, PC0–PC3 analog) |
 | Power | J-Link VTref 3.3 V only; no DCBUS, no USB; U14 pin 1 (EG2104 VCC) measured 0 V by the user |
-| Scope | ALIENTEK DS100 Mini (user manual V4.5): 2 channels, one probe used (CHA); MCX probe at ×10: 140 MHz, 10 MΩ, 15 pF; max 250 MSa/s, 128 Kpts; triggers: auto / normal / single, rising or falling edge |
+| Scope | ALIENTEK DS100 Mini (user manual V4.5): 2 channels, one probe used (CHA); probe switch ×10 and scope probe ratio X10 (user, 2026-10-15), so the 0.8 V threshold is 0.8 V at the pin; MCX probe at ×10: 140 MHz, 10 MΩ, 15 pF; max 250 MSa/s, 128 Kpts; triggers: auto / normal / single, rising or falling edge |
 
 Scope settings for each net (DS100 Mini menu names in brackets): probe switch ×10 and channel probe ratio X10 [通道 CHA → 探头 X10]; 1 V/div [垂直档位]; trigger type CHA rising [触发类型 CHA-上]; **threshold 0.8 V** [触发阈值]; mode single [触发方式 单次]; timebase **20 µs/div**; only CHA on.
 

@@ -1,6 +1,6 @@
 # Stage 4 — The PWM timebase and the ADC trigger
 
-Status: **all "done when" criteria pass** (runs 1–2, 2026-10-14) except the waveform checks, which are deferred by design. Moving to Stage 5 needs the user's confirmation, recorded in `AGENTS.md`.
+Status: **done** (2026-10-15). All "done when" criteria pass, including the waveform checks (run on TIM1 CH3N at PB9 / U7-4); the user confirmed Stage 4 done and Stage 5 entry on 2026-10-15 (`AGENTS.md`).
 
 ## Why TIM1 runs with its outputs disabled
 
@@ -95,6 +95,25 @@ Scope build `85267e7` / `e57ca62` (2026-10-15): CH1–3 on PA8–PA10 and an ISR
 
 Route change (user-approved 2026-10-15): TIM1 CH3N (AF12) on **PB9 at the U7-4 header**, replacing the ISR marker; the test patterns move to CH3 (CH1/CH2 fixed at 25 / 50 %). CCER may hold only CC1E–CC3E and CC3NE. Modes by UART key: 1 / 2 / 3 = CH3 at 25 / 50 / 75 % (CH3N 75 / 50 / 25 %), 4 = CH3 alternating 25 / 75 % per period with RCR 0, 5 = the same with RCR 1. What the probe on CH3N shows: frequency and (inverted) duty; center alignment (with alternating 25 / 75 % pulses centered on the period, the time between successive rising edges alternates 37.5 / 62.5 µs instead of a constant 50 µs); and the update event (RCR 1: each value applies to a whole period; RCR 0: the value written after the top loads at the bottom, mid-pulse).
 
+## Waveform results (2026-10-15, firmware `7b106d0`)
+
+Flash `zephyr.bin` SHA-256 `39999cc3…`, `verifybin` OK. Read-back: PC0–PC3 analog, PB9 alternate function 12 (`AFRH B = 0x77C0`), PB0 (SD1) a GPIO output driven low, `CCER = 0x511` (CC1E, CC2E, CC3E, CC3NE only), MOE on, SD1–SD4 low. Probe on U7-4 (TIM1 CH3N = CH3 inverted), ground U7-6; probe switch ×10, scope X10.
+
+The keyboard route did not work: nothing drives PB11 (H2-5, USART3 RX), which read low in 31/31 samples while 40 bytes were sent, and USART3 saw no byte or error, so the adapter's TX is not connected. Modes were set over J-Link instead: writing the firmware's `mode` variable (`0x2000099C`), and for the RCR modes the same steps as `pwm_adc_set_mode()` (stop counter, RCR, CNT = 0, UG, start). CCR3 read back the expected values each time.
+
+| Mode | Set | Measured on U7-4 (user) | Expected |
+|---|---|---|---|
+| 1 | CH3 25 % | 20 kHz, +Duty 75 % | 20 kHz, 75 % |
+| 2 | CH3 50 % | 20 kHz, +Duty 50 % | 50 % |
+| 3 | CH3 75 % | 20 kHz, +Duty 25 % | 25 % |
+| 5 | CH3 alternating 25 / 75 % per period, RCR 1 | low pulses alternating **12.5 / 37.5 µs**, rising-edge spacing **62.5 / 37.5 µs** | One update per period at the top; pulses centered on the bottom |
+| 4 | Same, RCR 0 | constant **25 µs** low pulses, +Duty 50 %, edges wobbling **37.5 / 62.5 µs** | The value written about 3 µs after the top loads at the bottom, mid-pulse: each pulse is half old, half new, and not centered |
+
+What this shows:
+- **Center-aligned:** in mode 5 the narrow and wide pulses share the same center (the counter bottom); edge-aligned PWM would give a constant 50 µs edge spacing.
+- **Preload and the update event:** a new CCR never takes effect at the moment it is written, only at an update event. With RCR 0 there is an update event at the bottom too, in the middle of a high-side pulse, so a duty written after the top splits that pulse (mode 4). With RCR 1, loaded by UG before the counter starts, the single update is at the top (mode 5), where all high sides are off. **Stage 6 uses RCR 1, started this way.** The cost is one PWM period (50 µs) from sample to new duty.
+- The three channels share one counter, ARR and update event, so CH1/CH2 behave the same as CH3 (not probed: PA8/PA9 are too fine to probe).
+
 ## Done when (roadmap, revised 2026-10-14)
 
 | Criterion | Result |
@@ -104,4 +123,4 @@ Route change (user-approved 2026-10-15): TIM1 CH3N (AF12) on **PB9 at the U7-4 h
 | The sample is at the top of the period | **Pass**, inferred from the ISR entry time (3.19–3.41 µs after the top, matching the conversion time); the sample instant itself is not visible without a pin |
 | IA/IC match the Stage 3 offsets | **Pass**: 1963.1 / 1997.2 vs 1963.5 / 1997.4 counts |
 | No DMA errors or ADC overruns over several minutes | **Pass**: 0 / 0 in about 14 minutes over two runs |
-| Deferred: pulses centered, a duty change taking effect only at an update event | **Not done** (needs TIM1 on PA8–PA10 and a logic analyzer, with the user's go-ahead). Preload is configured (`OCxPE = 1`, `ARPE = 1`), which is what makes CCR changes wait for the update event (RM0440), but this is not observed |
+| Pulses centered; a duty change taking effect only at an update event (deferred on 2026-10-14) | **Pass** (2026-10-15, oscilloscope on CH3N at U7-4): modes 5 and 4 above |
