@@ -1,6 +1,6 @@
 # Stage 2 — Read the encoder by hand
 
-Status: **in progress** (started 2026-10-14). Done so far: connector pinouts and the harness plan, two supply measurements. Next: build and check the harness, magnet, firmware.
+Status: **in progress** (started 2026-10-14). Done so far: connector pinouts and the harness plan, two supply measurements, harness built and checked (user report), firmware built (not flashed). Next: flash backup, flash, turn the shaft.
 
 ## Setup
 
@@ -45,10 +45,44 @@ Plugging CN2 into U7 directly would put VCC against GND. The schematic annotates
 
 KTH7823 supply at 3.3 V: 3.0–3.6 V, 11.6 mA typical (`DOC-ENC-DS`, table 7), plus about 1 mA for the board LED. It needs a diametrically magnetized magnet giving 30–150 mT.
 
-## To do
+Harness: built and checked end to end by the user, 2026-10-14 (reported; the check method and readings were not recorded).
 
-1. Build the harness; check each wire end to end and that no two adjacent wires are shorted; mark pin 1 on both connectors.
-2. Magnet and mount over the shaft end.
-3. Before the first flash: full 128 KiB flash backup as the recovery point.
-4. Firmware: TIM3 in encoder mode, count and `theta_e` over UART at about 10 Hz, Z on PB9.
-5. Done when (roadmap): 4096 counts per turn, correct sign, Z once per turn at the same count, no lost counts.
+## Firmware
+
+Source: `src/encoder.c` (BSP), `src/main.c`, TIM3/Z in `boards/others/foc_motor/foc_motor.dts`.
+
+| Part | Setting | Why |
+|---|---|---|
+| TIM3 | Zephyr `st,stm32-qdec` driver, encoder mode 3 (x4, `SMS = 0b011`), input filter level 3 | x4 counts every A and B edge: 1024 periods → 4096 counts per turn. Filter: 8 samples at 170 MHz = 47 ns |
+| TIM3 wrap | The driver sets `ARR = 61439`, so the count wraps at 61440 = 15 × 4096 | `count % 4096` is the angle within a turn, with no wrap tracking |
+| PB4/PB5 | AF2, pull-up | KTH7823 holds A/B/Z high at power-up; the pull-ups keep unplugged inputs still. PB4 is NJTRST after reset; only SWD is used, so reassigning it is fine |
+| PB9 (Z) | GPIO input, pull-up, interrupt on the rising edge (EXTI 5–9, priority 5); the ISR latches the TIM3 count | The Z rising edge marks zero once per turn (`DOC-ENC-DS` §7.3) |
+| Output | USART3 921600 on H2, one line every 100 ms; one extra line per Z | |
+
+`theta_e` is computed in integers, `(count % 4096) × 7 % 4096 × 360 / 4096`, with no offset yet (alignment is Stage 7). The firmware does not use `lib/foc` (that is Stage 5) and does not touch TIM1 or the SD pins; the build-time checks for SD1–SD4 low and TIM1 disabled are unchanged.
+
+Example lines:
+
+```
+cnt 12345 pos   +123 turn   +0 mech   57 theta_e  35.0 deg
+Z #3 (+1) mech  812 pos  +4908, +4096 since last Z
+```
+
+Build (2026-10-14, Zephyr v4.4.2, SDK 1.0.1, `west build -p always -b foc_motor -d build/arm . -- -DBUILD_VERSION=v4.4.2`): flash 37,940 B, RAM 6,592 B; the CI size, heap, stack and `output-low` checks pass locally. `zephyr.bin` SHA-256 `5088e961…` and `zephyr.hex` SHA-256 `817117fa…` from the uncommitted tree; record the commit and hashes again for the binary that gets flashed.
+
+## Test procedure
+
+0. Diametrically magnetized magnet on the shaft end, centered over the KTH7823 (30–150 mT, see above).
+1. Back up the full 128 KiB flash with the J-Link (recovery point); record the SHA-256.
+2. Flash `zephyr.hex`; read back and compare.
+3. USB-UART on H2 (RX → H2-6, TX → H2-5, GND → H2-4), 921600 8N1; log to a file.
+4. Turn the shaft slowly by hand, checking each item:
+   - Mark a start position; one full turn changes `pos` by 4096 (±a few counts for where you stop).
+   - Turn one way, then the other: the sign of the change follows the direction. Note which direction (viewed from the shaft end) counts up. The datasheet says A leads B for CW rotation viewed from above the chip, and A is TIM3_CH1, so CW over the chip should count up.
+   - Z: one Z line per turn, always the same `mech` count in the same direction. In the other direction the rising edge comes from the other side of the Z pulse, so `mech` can differ by the Z width; that is expected.
+   - After 10+ turns back and forth, return to the start mark: `mech` is where it started and the Z `mech` has not drifted.
+   - `theta_e` goes around 7 times per turn.
+
+## Done when (roadmap)
+
+4096 counts per turn, correct sign, Z once per turn at the same count, no lost counts.
