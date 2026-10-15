@@ -1,6 +1,6 @@
 # Stage 5 — The FOC math on the chip
 
-Status: **both "done when" criteria pass** (2026-10-15): the chip's results match the host within float tolerance on all 64 vectors, and one full current-loop step takes at most 1395 cycles (8.2 µs, 41 % of the 3400-cycle / 20 µs budget). Recording Stage 5 as done and entering Stage 6 still needs the user's confirmation (`AGENTS.md`).
+Status: **done** (2026-10-15). Both "done when" criteria pass: the chip's results match the host within float tolerance on all 64 vectors, and one full current-loop step takes at most 1395 cycles (8.2 µs, 41 % of the 3400-cycle / 20 µs budget). The user confirmed Stage 5 done and Stage 6 entry on 2026-10-15 (`AGENTS.md`).
 
 ## What was built
 
