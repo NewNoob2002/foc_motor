@@ -10,8 +10,10 @@
 #include <soc.h>
 #include <zephyr/arch/cpu.h>
 #include <zephyr/device.h>
+#include <zephyr/devicetree/gpio.h>
 #include <zephyr/drivers/clock_control.h>
 #include <zephyr/drivers/clock_control/stm32_clock_control.h>
+#include <zephyr/drivers/gpio.h>
 #include <zephyr/irq.h>
 #include <zephyr/kernel.h>
 #include <zephyr/sys/atomic.h>
@@ -37,25 +39,40 @@ BUILD_ASSERT(DT_REG_ADDR(TIM1_NODE) == TIM1_BASE && DT_REG_ADDR(ADC2_NODE) == AD
                  && DT_REG_ADDR(DMA2_NODE) == DMA2_BASE,
              "unexpected peripheral addresses");
 
-/* Fixed-rank sequence [IA, IC] (HW-ADC-007). */
-#define ADC_CH_IA             LL_ADC_CHANNEL_3  /* PA6 */
-#define ADC_CH_IC             LL_ADC_CHANNEL_17 /* PA4 */
+/* Fixed-rank sequence [IA, IC, VBUS] (HW-ADC-007, HW-ADC-013). */
+#define ADC_CH_IA            LL_ADC_CHANNEL_3  /* PA6 */
+#define ADC_CH_IC            LL_ADC_CHANNEL_17 /* PA4 */
+#define ADC_CH_VBUS          LL_ADC_CHANNEL_11 /* PC5 */
 
 /*
  * Zero-latency: kernel critical sections (BASEPRI) do not mask it, so its
  * entry time does not depend on what the threads are doing. It is the only
  * one (AGENTS.md), and it must not call any kernel API.
  */
-#define DMA_IRQ_PRIORITY      0
+#define DMA_IRQ_PRIORITY     0
 
 /* ADC regular group start: OC4REF rises one tick before the counter top. */
-#define TRIGGER_CCR4          (PWM_ARR - 1U)
+#define TRIGGER_CCR4         (PWM_ARR - 1U)
 
 /* 50 %: zero line-to-line voltage, used before the first step and after a fault. */
-#define CCR_DUTY_50           (PWM_ARR / 2U)
+#define CCR_DUTY_50          (PWM_ARR / 2U)
 
-/* PC0-PC3 (PWMA-D) must stay analog: MODER bits 0-7 all set. */
-#define GPIOC_PWM_PINS_ANALOG 0xFFU
+/* MODER fields of PC0-PC3 (PWMA-D): 2 bits each. Analog = 0b11, alternate function = 0b10. */
+#define MODER_PC0_PC2_MASK   0x3FU
+#define MODER_PC0_PC2_ANALOG 0x3FU
+#define MODER_PC0_PC2_AF     0x2AU
+#define MODER_PC3_MASK       0xC0U
+
+/* PC0/PC1/PC2 = TIM1 CH1/CH2/CH3 on AF2 (RM0440 / DS12589 alternate-function table). */
+#define GATE_PINS            (LL_GPIO_PIN_0 | LL_GPIO_PIN_1 | LL_GPIO_PIN_2)
+#define GATE_AF              LL_GPIO_AF_2
+
+/* SD1 = PB0, SD2 = PA1, SD3 = PA2; SD4 = PA0 stays low (D leg). Checked against the hogs below. */
+#define SD1_PORT             GPIOB
+#define SD1_PIN              LL_GPIO_PIN_0
+#define SD23_PORT            GPIOA
+#define SD23_PINS            (LL_GPIO_PIN_1 | LL_GPIO_PIN_2)
+#define SD4_PIN              LL_GPIO_PIN_0
 
 /*
  * Scope pins: TIM1 CH1-3 on PA8/PA9/PA10 (AF6, LQFP 41-43, not connected on
@@ -63,14 +80,24 @@ BUILD_ASSERT(DT_REG_ADDR(TIM1_NODE) == TIM1_BASE && DT_REG_ADDR(ADC2_NODE) == AD
  * U7-4 header pin, floating since the Z wire went to U7-3). CH3N's other
  * pins PB1, PB15 and PF0 are not in AF mode, so only PB9 carries it.
  */
-#define PROBE_AF              LL_GPIO_AF_6
-#define CH3N_PIN              LL_GPIO_PIN_9
-#define CH3N_AF               LL_GPIO_AF_12
+#define PROBE_AF             LL_GPIO_AF_6
+#define CH3N_PIN             LL_GPIO_PIN_9
+#define CH3N_AF              LL_GPIO_AF_12
 
 /* No CH4 pin and no CH1N/CH2N (CH2N could reach PB0 = SD1). */
-#define CCER_ALLOWED          (TIM_CCER_CC1E | TIM_CCER_CC2E | TIM_CCER_CC3E | TIM_CCER_CC3NE)
+#define CCER_ALLOWED         (TIM_CCER_CC1E | TIM_CCER_CC2E | TIM_CCER_CC3E | TIM_CCER_CC3NE)
 
-static volatile uint16_t adc_buf[2];
+#define SD_HOG_IS(label, port, pin)                                                                                    \
+    BUILD_ASSERT(DT_SAME_NODE(DT_PARENT(DT_NODELABEL(label)), DT_NODELABEL(port))                                      \
+                     && DT_GPIO_HOG_PIN_BY_IDX(DT_NODELABEL(label), 0) == (pin)                                        \
+                     && (DT_GPIO_HOG_FLAGS_BY_IDX(DT_NODELABEL(label), 0) & GPIO_ACTIVE_LOW) == 0,                     \
+                 #label " must be an active-high hog on " #port " pin " #pin)
+SD_HOG_IS(sd1_hog, gpiob, 0);
+SD_HOG_IS(sd2_hog, gpioa, 1);
+SD_HOG_IS(sd3_hog, gpioa, 2);
+SD_HOG_IS(sd4_hog, gpioa, 0);
+
+static volatile uint16_t adc_buf[3];
 
 /*
  * Single writer (the ISR). seq is odd while the ISR updates stats, so a
@@ -85,6 +112,12 @@ static bool have_last_entry;
 /* Set once by pwm_adc_init() before the ISR is enabled. */
 static pwm_adc_step_fn step_fn;
 static uint32_t overruns_in_a_row;
+
+/* Power-stage state: written only by the ISR (and pwm_adc_stop()), read by threads. */
+static atomic_t powered;
+
+/* ISR entries; single writer (the ISR), 32-bit reads are atomic. */
+static volatile uint32_t isr_total;
 
 /*
  * Forced-overrun test (Stage 6): the debugger writes test_spin_cycles, then
@@ -101,6 +134,8 @@ static void stats_reset_locked(void) {
         .period_min = UINT32_MAX,
         .cnt_min = UINT16_MAX,
         .ccr = {keep.ccr[0], keep.ccr[1], keep.ccr[2]},
+        .power_on = keep.power_on,
+        .power_ons = keep.power_ons,
         .overruns = keep.overruns,
         .missed = keep.missed,
         .fault = keep.fault,
@@ -111,13 +146,49 @@ static void stats_reset_locked(void) {
 
 static uint16_t duty_to_ccr(float duty) {
     /* PWM mode 1, center-aligned: the output is high while CNT < CCR, so duty = CCR / ARR. */
-    if (!(duty > 0.0f)) {
-        return 0U; /* also NaN */
-    }
-    if (duty >= 1.0f) {
-        return (uint16_t)PWM_ARR;
+    if (!(duty >= PWM_ADC_DUTY_MIN)) {
+        duty = PWM_ADC_DUTY_MIN; /* also NaN */
+    } else if (duty > PWM_ADC_DUTY_MAX) {
+        duty = PWM_ADC_DUTY_MAX;
     }
     return (uint16_t)(duty * (float)PWM_ARR + 0.5f);
+}
+
+/* SD1-SD3 low first, so the gate drivers turn both MOSFETs off before IN stops being driven. */
+static void power_off(void) {
+    LL_GPIO_ResetOutputPin(SD1_PORT, SD1_PIN);
+    LL_GPIO_ResetOutputPin(SD23_PORT, SD23_PINS);
+    /* MODER 0b11 = analog: the EG2104 IN pull-down (200 kOhm) holds IN low. */
+    LL_GPIO_WriteReg(GPIOC, MODER, LL_GPIO_ReadReg(GPIOC, MODER) | MODER_PC0_PC2_ANALOG);
+    (void)atomic_set(&powered, 0);
+}
+
+/*
+ * Pin invariant independent of the power state: PC3 analog, SD4 a low
+ * output, CCER only CH1-3 and CH3N.
+ */
+static bool fixed_pins_safe(void) {
+    return (LL_TIM_ReadReg(TIM1, CCER) & ~CCER_ALLOWED) == 0U
+           && (LL_GPIO_ReadReg(GPIOC, MODER) & MODER_PC3_MASK) == MODER_PC3_MASK
+           && LL_GPIO_GetPinMode(SD23_PORT, SD4_PIN) == LL_GPIO_MODE_OUTPUT
+           && LL_GPIO_IsOutputPinSet(SD23_PORT, SD4_PIN) == 0U;
+}
+
+/*
+ * PC0-PC2 start the PWM to the gate drivers (their AF, type and speed were
+ * set at init while they were analog), then SD1-SD3 go high. Returns false,
+ * changing nothing, if the fixed pin invariant does not hold.
+ */
+static bool power_on(void) {
+    if (!fixed_pins_safe()) {
+        return false;
+    }
+    LL_GPIO_WriteReg(GPIOC, MODER, (LL_GPIO_ReadReg(GPIOC, MODER) & ~MODER_PC0_PC2_MASK) | MODER_PC0_PC2_AF);
+    LL_GPIO_SetOutputPin(SD1_PORT, SD1_PIN);
+    LL_GPIO_SetOutputPin(SD23_PORT, SD23_PINS);
+    (void)atomic_set(&powered, 1);
+    stats.power_ons++;
+    return true;
 }
 
 static void set_ccr(uint16_t a, uint16_t b, uint16_t c) {
@@ -130,8 +201,9 @@ static void set_ccr(uint16_t a, uint16_t b, uint16_t c) {
     stats.ccr[2] = c;
 }
 
-/* Outputs off (MOE = 0) and 50 % duty; the counter keeps running so the ISR keeps its statistics. */
+/* Power stage off, outputs off (MOE = 0), 50 % duty; the counter keeps running so the ISR keeps its statistics. */
 static void fault_latch(uint32_t reason) {
+    power_off();
     LL_TIM_DisableAllOutputs(TIM1);
     set_ccr(CCR_DUTY_50, CCR_DUTY_50, CCR_DUTY_50);
     stats.fault |= reason;
@@ -144,7 +216,15 @@ ISR_DIRECT_DECLARE(dma_isr) {
     bool up = LL_TIM_GetDirection(TIM1) == LL_TIM_COUNTERDIRECTION_UP;
     bool dma_error = LL_DMA_IsActiveFlag_TE1(DMA2) != 0U;
     bool overrun = LL_ADC_IsActiveFlag_OVR(ADC2) != 0U;
-    pwm_adc_sample_t sample = {.ia_code = adc_buf[0], .ic_code = adc_buf[1], .enc_count = encoder_count()};
+    isr_total = isr_total + 1U;
+
+    pwm_adc_sample_t sample = {
+        .ia_code = adc_buf[0],
+        .ic_code = adc_buf[1],
+        .vbus_code = adc_buf[2],
+        .enc_count = encoder_count(),
+        .power_on = atomic_get(&powered) != 0,
+    };
 
     LL_DMA_ClearFlag_GI1(DMA2);
     if (overrun) {
@@ -160,11 +240,23 @@ ISR_DIRECT_DECLARE(dma_isr) {
         fault_latch(PWM_ADC_FAULT_DMA_ERROR);
     }
     if (stats.fault == 0U) {
-        pwm_adc_duty_t duty;
+        pwm_adc_cmd_t cmd;
 
-        step_fn(&sample, &duty);
-        set_ccr(duty_to_ccr(duty.a), duty_to_ccr(duty.b), duty_to_ccr(duty.c));
+        step_fn(&sample, &cmd);
+        if (cmd.trip != 0U) {
+            fault_latch(cmd.trip);
+        } else {
+            set_ccr(duty_to_ccr(cmd.a), duty_to_ccr(cmd.b), duty_to_ccr(cmd.c));
+            if (cmd.power_on && !sample.power_on) {
+                if (!power_on()) {
+                    fault_latch(PWM_ADC_FAULT_PINS);
+                }
+            } else if (!cmd.power_on && sample.power_on) {
+                power_off();
+            }
+        }
     }
+    stats.power_on = atomic_get(&powered) != 0;
 
     if (have_last_entry) {
         uint32_t period = entry - last_entry;
@@ -244,6 +336,20 @@ static void probe_pins_setup(void) {
         LL_GPIO_SetPinMode(GPIOA, probe_pins[i], LL_GPIO_MODE_ALTERNATE);
     }
 
+    /*
+     * PC0-PC2 get their TIM1 alternate function, push-pull and low speed now,
+     * while they are analog (these settings have no effect in analog mode),
+     * so switching the power stage on only changes MODER.
+     */
+    static const uint32_t gate_pins[] = {LL_GPIO_PIN_0, LL_GPIO_PIN_1, LL_GPIO_PIN_2};
+
+    for (size_t i = 0; i < ARRAY_SIZE(gate_pins); i++) {
+        LL_GPIO_SetPinOutputType(GPIOC, gate_pins[i], LL_GPIO_OUTPUT_PUSHPULL);
+        LL_GPIO_SetPinSpeed(GPIOC, gate_pins[i], LL_GPIO_SPEED_FREQ_LOW);
+        LL_GPIO_SetPinPull(GPIOC, gate_pins[i], LL_GPIO_PULL_NO);
+        LL_GPIO_SetAFPin_0_7(GPIOC, gate_pins[i], GATE_AF);
+    }
+
     LL_GPIO_SetPinOutputType(GPIOB, CH3N_PIN, LL_GPIO_OUTPUT_PUSHPULL);
     LL_GPIO_SetPinSpeed(GPIOB, CH3N_PIN, LL_GPIO_SPEED_FREQ_LOW);
     LL_GPIO_SetPinPull(GPIOB, CH3N_PIN, LL_GPIO_PULL_NO);
@@ -310,13 +416,16 @@ static int adc2_setup(void) {
     LL_ADC_REG_SetContinuousMode(ADC2, LL_ADC_REG_CONV_SINGLE);
     LL_ADC_REG_SetOverrun(ADC2, LL_ADC_REG_OVR_DATA_PRESERVED);
     LL_ADC_REG_SetDMATransfer(ADC2, LL_ADC_REG_DMA_TRANSFER_UNLIMITED);
-    LL_ADC_REG_SetSequencerLength(ADC2, LL_ADC_REG_SEQ_SCAN_ENABLE_2RANKS);
+    LL_ADC_REG_SetSequencerLength(ADC2, LL_ADC_REG_SEQ_SCAN_ENABLE_3RANKS);
     LL_ADC_REG_SetSequencerRanks(ADC2, LL_ADC_REG_RANK_1, ADC_CH_IA);
     LL_ADC_REG_SetSequencerRanks(ADC2, LL_ADC_REG_RANK_2, ADC_CH_IC);
+    LL_ADC_REG_SetSequencerRanks(ADC2, LL_ADC_REG_RANK_3, ADC_CH_VBUS);
     LL_ADC_SetChannelSingleDiff(ADC2, ADC_CH_IA, LL_ADC_SINGLE_ENDED);
     LL_ADC_SetChannelSingleDiff(ADC2, ADC_CH_IC, LL_ADC_SINGLE_ENDED);
+    LL_ADC_SetChannelSingleDiff(ADC2, ADC_CH_VBUS, LL_ADC_SINGLE_ENDED);
     LL_ADC_SetChannelSamplingTime(ADC2, ADC_CH_IA, LL_ADC_SAMPLINGTIME_47CYCLES_5);
     LL_ADC_SetChannelSamplingTime(ADC2, ADC_CH_IC, LL_ADC_SAMPLINGTIME_47CYCLES_5);
+    LL_ADC_SetChannelSamplingTime(ADC2, ADC_CH_VBUS, LL_ADC_SAMPLINGTIME_47CYCLES_5);
 
     LL_ADC_ClearFlag_ADRDY(ADC2);
     LL_ADC_Enable(ADC2);
@@ -346,11 +455,26 @@ static void dma2_setup(void) {
 }
 
 bool pwm_adc_outputs_safe(void) {
-    return (LL_TIM_ReadReg(TIM1, CCER) & ~CCER_ALLOWED) == 0U
-           && (LL_GPIO_ReadReg(GPIOC, MODER) & GPIOC_PWM_PINS_ANALOG) == GPIOC_PWM_PINS_ANALOG;
+    uint32_t gate_moder = LL_GPIO_ReadReg(GPIOC, MODER) & MODER_PC0_PC2_MASK;
+
+    if (!fixed_pins_safe()) {
+        return false;
+    }
+    if (atomic_get(&powered) != 0) {
+        return gate_moder == MODER_PC0_PC2_AF;
+    }
+    return gate_moder == MODER_PC0_PC2_ANALOG && LL_GPIO_IsOutputPinSet(SD1_PORT, SD1_PIN) == 0U
+           && (LL_GPIO_ReadOutputPort(SD23_PORT) & SD23_PINS) == 0U;
 }
 
+/*
+ * Thread context. The ISR cannot be running while a thread runs (single
+ * core), so once its interrupt is disabled nothing can switch the power
+ * stage on again; then the stage goes off and the timer stops.
+ */
 void pwm_adc_stop(void) {
+    irq_disable(DMA2_Channel1_IRQn);
+    power_off();
     LL_TIM_DisableAllOutputs(TIM1);
     LL_TIM_DisableCounter(TIM1);
 }
@@ -396,6 +520,14 @@ int pwm_adc_init(pwm_adc_step_fn step) {
     LL_TIM_EnableAllOutputs(TIM1);
     LL_TIM_EnableCounter(TIM1);
     return 0;
+}
+
+bool pwm_adc_power_is_on(void) {
+    return atomic_get(&powered) != 0;
+}
+
+uint32_t pwm_adc_isr_total(void) {
+    return isr_total;
 }
 
 bool pwm_adc_stats_take(pwm_adc_stats_t* out) {

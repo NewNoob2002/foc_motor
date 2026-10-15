@@ -5,9 +5,7 @@
 #include <zephyr/devicetree.h>
 
 /* Board constants from DOC-MAIN-SCH. */
-#define VBUS_DIV_TOP_OHM 100000
-#define VBUS_DIV_BOT_OHM 4700
-#define NTC_PULLUP_OHM   10000
+#define NTC_PULLUP_OHM 10000
 
 int32_t analog_code_x100_to_mv(int32_t code_x100) {
     int64_t num = (int64_t)code_x100 * ANALOG_VDDA_MV;
@@ -25,7 +23,7 @@ int32_t analog_phase_current_ma(int32_t code_x100, int32_t offset_x100) {
 int32_t analog_vbus_mv(int32_t code_x100) {
     int64_t pin_mv = analog_code_x100_to_mv(code_x100);
 
-    return (int32_t)(pin_mv * (VBUS_DIV_TOP_OHM + VBUS_DIV_BOT_OHM) / VBUS_DIV_BOT_OHM);
+    return (int32_t)(pin_mv * (ANALOG_VBUS_DIV_TOP_OHM + ANALOG_VBUS_DIV_BOT_OHM) / ANALOG_VBUS_DIV_BOT_OHM);
 }
 
 int32_t analog_ntc_ohm(int32_t code_x100) {
