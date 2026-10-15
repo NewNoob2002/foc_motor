@@ -56,6 +56,7 @@
 - `HW-PWM-006` — `POLICY`：D 相永久关闭不是原理图强制事实，而是本项目安全策略。复位和运行均保持 `SD4=0`，且不得把 PC3 配置为有效功率 PWM。
 - `HW-PWM-007` — `CONFIRMED`：EG2104 在 `SD=0` 时 HO/LO 都关闭；`SD=1, IN=0` 时 HO 关闭而 LO 导通。因此“只停止 TIM1 或把 IN 拉低”不等价于安全关断，安全停机必须拉低 SD。证据：`DOC-GATE-DS` PDF p5 pin description、p11 truth table。
 - `HW-PWM-008` — `CONFIRMED_WITH_CONDITION`：EG2104 标称内部死区 50-300 ns、典型 100 ns，传播延迟最高约 400 ns；最终最小脉宽、死区和自举刷新必须在真实栅极上测量。证据：`DOC-GATE-DS` PDF p8 electrical characteristics、p11 application notes。
+- `HW-PWM-009` — `CONFIRMED`：PC0-PC3（U3 第 8-11 脚）经 `PWMA-D` 网络直连 U14-U17 EG2104 的 IN（第 2 脚），原理图上无串联电阻或下拉；EG2104 VCC 为 +12V，由 DCBUS 经 U9 降压产生，无 DCBUS 时为 0 V。EG2104 极限参数 IN 为 −0.3 V 至 VCC+0.3 V（SD 为固定 6 V），因此无 DCBUS 时 PC0-PC3 输出高电平（3.3 V）会超出 IN 绝对最大值。无 DCBUS 时 PC0-PC3 只能保持模拟/不驱动或输出低。TIM1 CH1-3 的备用引脚 PA8/PA9/PA10（第 41-43 脚）在本板未连接。证据：`DOC-GATE-DS` §7.1 极限参数；`DOC-MAIN-SCH` U3/U14 读图（`docs/evidence/lab_notes/stage4/`）；+12V 无 DCBUS 时为 0 V 尚未用万用表实测。
 
 ## 4. ADC、DMA 与电流采样
 
