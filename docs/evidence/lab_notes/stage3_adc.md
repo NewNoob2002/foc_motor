@@ -1,6 +1,6 @@
 # Stage 3 — Read the ADC
 
-Status: **in progress** (started 2026-10-14). Done so far: analog front ends read from the schematic, conversion formulas, firmware built (not flashed). Next: flash, record the readings.
+Status: **all "done when" criteria pass** (runs 1–2, 2026-10-14). Moving to Stage 4 needs the user's confirmation, recorded in `AGENTS.md`.
 
 ## Setup
 
@@ -75,6 +75,59 @@ Build (2026-10-14, Zephyr v4.4.2, SDK 1.0.1): flash 42,576 B, RAM 7,936 B; CI si
 3. Record per channel: mean (offset), standard deviation and min/max (noise) across several reports.
 4. Multimeter (optional cross-check): IA, IC and VREF1.65 test points against GND, and the 3.3 V rail.
 
+## Run 1 (2026-10-14, 20:43–20:53, firmware `dc99fb1`)
+
+Raw files in `build/hil/stage3/` (not committed: J-Link scripts and logs, `uart_run1.log`, `uart_run2.log`, flashed binaries).
+
+| Step | Result |
+|---|---|
+| Board identity | UID `001D0050 42535013 20363130`, J-Link S/N 63728769, VTref 3.375 V; bench as stage 2 (J-Link 3.3 V only, no DCBUS/USB) |
+| Flash | `zephyr.hex` SHA-256 `0760b403…`, `zephyr.bin` `96cd49f0…`; `verifybin` OK (43,008 B). Recovery point: the stage 2 `preflash.bin` |
+| Registers after start | SD1–SD4 low (`ODR` A/B = 0), TIM1 not clocked; ADC2 `CR = 0x10000001` (regulator on, enabled), `CALFACT = 0x39` (boot calibration ran), `SMPR1/2` = 47.5 cycles on IN3/IN11/IN17 and 247.5 on IN15; PA4, PA6, PB15, PC5 analog |
+| UART | 10 minutes, about 560 reports of 1000 samples per channel, board untouched |
+| Bug | `VDDA 0 mV`: every mV/mA value printed 0. `adc_dt_spec.vref_mv` is only set with `zephyr,vref-mv`; fixed in `f987f8d` (take it from `adc_ref_internal()`). Raw counts and NTC ohms (ratiometric) were unaffected |
+
+Over the 10 minutes (statistics of the per-report values):
+
+| Channel | Offset: mean of report means | Report means range | Noise: median SD of 1000 samples | Overall min–max |
+|---|---|---|---|---|
+| IA | **1963.46** counts | 1963.09–1963.80 | **6.30** counts | 1937–2011 |
+| IC | **1997.38** counts | 1997.07–1997.73 | **6.33** counts | 1975–2022 |
+| VBUS | 0.31 counts | 0.19–0.45 | 0.46 counts | 0–2 |
+| TEMP | 1924.5 counts | 1922.6–1926.2 | 0.58 counts | 1921–1928 |
+
+## Run 2 (2026-10-14, firmware `f987f8d`)
+
+Flash `zephyr.hex` SHA-256 `01b9df53…`, `zephyr.bin` `616bb3dc…`, `verifybin` OK; same registers (SD low, TIM1 off, `CALFACT = 0x39`). First report:
+
+```
+1000 samples per channel per report, VDDA 3300 mV assumed
+IA   mean 1962.98 sd 5.92 min 1947 max 1980
+     1581 mV, -1362 mA vs mid-scale, sd 95 mA
+IC   mean 1997.44 sd 6.27 min 1982 max 2015
+     1609 mV, -806 mA vs mid-scale, sd 101 mA
+VBUS mean    0.19 sd 0.39 min    0 max    1
+        0 mV, bus 0 mV
+TEMP mean 1922.66 sd 0.56 min 1921 max 1925
+     1549 mV, NTC 8850 ohm
+```
+
+Hand check: IA 1962.98 × 3300 / 4095 = 1581.9 mV; (1962.98 − 2047.5) × 0.806 mV × 20 A/V = −1362 mA; NTC 10 kΩ × 1922.66 / (4095 − 1922.66) = 8850 Ω. All match the firmware.
+
+## What the numbers mean
+
+- **Offsets are not mid-scale.** IA sits 84 counts (68 mV) and IC 50 counts (40 mV) below 2047.5. Read as current, that is −1.36 A and −0.81 A with nothing flowing, so the firmware must measure each offset at start-up (motor off) and subtract it; a fixed 2048 would be badly wrong. The likely causes are the op-amp input offset (amplified by the noise gain of 11) and the 1 % resistor mismatch in the difference amplifier; this was not separated by measurement. The offsets moved by less than ±0.4 counts over 10 minutes.
+- **Noise comes from the current-sense chain, not the ADC.** VBUS and TEMP show SD 0.5–0.6 counts, IA/IC 6.3 counts (about 100 mA RMS, about 1.2 A peak to peak in the min/max). The 100 Ω + 100 pF output filters (16 MHz corner) remove almost nothing at these frequencies. Where it comes from (amplifier noise, the J-Link-supplied 3.3 V rail, pickup) was not measured. For FOC this sets a floor: one sample has about ±0.3 A of noise (3 SD); averaging or the current-loop bandwidth reduce it.
+- **VBUS reads 0.3 counts** (about 5 mV at the pin): no DCBUS, as expected.
+- **TEMP: NTC about 8.85 kΩ.** If it is a 10 kΩ NTC with B ≈ 3950 (an assumption, not on the schematic) that is about 28 °C; not confirmed.
+- **Absolute volts are about 2 % low** because VDDA is the J-Link's 3.375 V, not 3.300 V; counts, offsets in counts and NTC ohms are unaffected.
+
+Not done: the optional multimeter cross-check of IA, IC, VREF1.65 and the 3.3 V rail.
+
 ## Done when (roadmap)
 
-IA/IC offsets recorded (expect near 2048 counts) with their noise in counts; VBUS reads near 0; the conversion formulas are in code and in this note.
+| Criterion | Result |
+|---|---|
+| IA/IC offsets recorded with their noise in counts | **Pass**: IA 1963.5, IC 1997.4 counts; SD 6.3 counts each (10 minutes) |
+| VBUS reads near 0 | **Pass**: 0.3 counts |
+| Conversion formulas in code and in the lab note | **Pass**: `src/analog.c` and the formulas section above, hand-checked against run 2 |
