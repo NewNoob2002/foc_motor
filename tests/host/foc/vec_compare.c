@@ -101,7 +101,8 @@ static bool parse_line(const char* line, vec_line_t* v) {
         return false;
     }
     v->limited = (unsigned int)value;
-    return *p == '\0' || *p == '\r' || *p == '\n';
+    /* End of line, or the colour reset (ESC [ 0 m) that the Zephyr log adds. */
+    return *p == '\0' || *p == '\r' || *p == '\n' || *p == '\x1b';
 }
 
 /* Same format as print_vector() in src/foc_bench.c. */
@@ -144,6 +145,7 @@ static int selftest(void) {
     CHECK(!parse_line("foc_vec 1 0 0 0", &v));
     CHECK(!parse_line("foc_vec 1 0 0 0 0 0 0 0 0 0 2", &v));
     CHECK(!parse_line("foc_vec 1 0 0 0 0 0 0 0 0 0 0 junk", &v));
+    CHECK(parse_line("<inf> foc_bench: foc_vec 1 0 0 0 0 0 0 0 0 0 0\x1b[0m\r\n", &v));
 
     /* Row 0: nothing in, zero voltage out. */
     foc_vector_step(&foc_vectors_in[0], &out);

@@ -195,11 +195,15 @@ static __noinline void print_vector(uint32_t i, const foc_vector_out_t* out) {
 }
 
 void foc_bench_run(void) {
-    /* Started before the first measurement; the counter keeps running unless a debugger disconnects. */
     (void)cycles_start();
     LOG_INF("Stage 5 FOC bench: FPU %s, %u vectors x %u passes, IRQs locked per vector",
             IS_ENABLED(CONFIG_FPU) ? "on (hard-float)" : "off (soft-float)", FOC_VECTORS_COUNT, BENCH_PASSES);
     measure();
+    /* A J-Link disconnect during the measurement stops CYCCNT (seen on the first stage 5 run: every min read 0). */
+    if (!cycles_start()) {
+        LOG_WRN("DWT counter stopped during the measurement (debugger disconnect?); the cycle figures are invalid, "
+                "reset with the debugger attached or unplugged");
+    }
     print_spans();
 
     uint32_t step_max = MAX(spans[STAGE_STEP].max_warm, spans[STAGE_STEP].max_cold);
