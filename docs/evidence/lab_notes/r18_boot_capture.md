@@ -79,7 +79,7 @@ Why again: `f2460b5` is the first firmware that can drive these nets (power stag
 |---|---|
 | Board | UID `001D0050 42535013 20363130` (read at each J-Link session) |
 | Firmware | `f2460b5` (merged as `5f7cc0c`), flashed and verified (`verifybin`) |
-| Power | **USB only** (J-Link power off, VTref read 3.320 V = the board's own LP5907), no DCBUS (`HW-PWR-003`) |
+| Power | **USB only**, no DCBUS; J-Link target power off. VTref read 3.319–3.322 V over the eight step-4 sessions. With this wiring the board's LP5907 supplies the 3.3 V rail (`HW-PWR-003`); VTref alone does not show the source |
 | Scope | Same as run 1: DS100 Mini, ×10 / X10, 1 V/div, single trigger CHA rising at 0.8 V, 20 µs/div; probe ground H2-4 |
 
 Procedure per net (the user ran steps 1–3, Claude step 4):
