@@ -1,6 +1,6 @@
 # Stage 6 — The real FOC interrupt, without motor power
 
-Status: **all three "done when" criteria pass** (2026-10-15): the duty pattern follows the shaft at 7 electrical turns per mechanical turn (hand-turn with the real encoder, and a debugger-written sweep), the worst ISR is 13.8 µs with 0 overruns over 7.4 minutes, and forced overruns are detected. Recording Stage 6 as done needs the user's confirmation (`AGENTS.md`).
+Status: **done** (2026-10-15). All three "done when" criteria pass: the duty pattern follows the shaft at 7 electrical turns per mechanical turn (hand-turn with the real encoder, and a debugger-written sweep), the worst ISR is 13.8 µs with 0 overruns over 7.4 minutes, and forced overruns are detected. The user confirmed Stage 6 done on 2026-10-15 (`AGENTS.md`); Stage 7 is not entered.
 
 ## What was built
 
