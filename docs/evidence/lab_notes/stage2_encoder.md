@@ -1,6 +1,6 @@
 # Stage 2 — Read the encoder by hand
 
-Status: **in progress** (started 2026-10-14). Done so far: connector pinouts and the harness plan, two supply measurements, harness built and checked (user report), firmware built (not flashed). Flashed (run 1): A/B counting works; Z is open at PB9. Next: fix Z, then the marked-turn checks.
+Status: **all "done when" criteria pass** (run 2, 2026-10-14). Moving to Stage 3 needs the user's confirmation, recorded in `AGENTS.md`.
 
 ## Setup
 
@@ -39,7 +39,7 @@ Plugging CN2 into U7 directly would put VCC against GND. The schematic annotates
 |---|---|---|
 | 5 A | U7-2 | PB4 = TIM3_CH1 |
 | 2 B | U7-5 | PB5 = TIM3_CH2 |
-| 4 Z | U7-4 | PB9, GPIO interrupt (PB3 is kept free: it is also the SWO trace pin) |
+| 4 Z | U7-4 (plan) → **U7-3 as built** | Plan: PB9. As built: PB3, GPIO interrupt (firmware moved to PB3 in `6adcd13`; PB3 is also TRACESWO, unused here) |
 | 1 GND | U7-6 | |
 | 6 VCC3.3 | U7-1 (measured 3.3 V) | |
 
@@ -56,7 +56,7 @@ Source: `src/encoder.c` (BSP), `src/main.c`, TIM3/Z in `boards/others/foc_motor/
 | TIM3 | Zephyr `st,stm32-qdec` driver, encoder mode 3 (x4, `SMS = 0b011`), input filter level 3 | x4 counts every A and B edge: 1024 periods → 4096 counts per turn. Filter: 8 samples at 170 MHz = 47 ns |
 | TIM3 wrap | The driver sets `ARR = 61439`, so the count wraps at 61440 = 15 × 4096 | `count % 4096` is the angle within a turn, with no wrap tracking |
 | PB4/PB5 | AF2, pull-up | KTH7823 holds A/B/Z high at power-up; the pull-ups keep unplugged inputs still. PB4 is NJTRST after reset; only SWD is used, so reassigning it is fine |
-| PB9 (Z) | GPIO input, pull-up, interrupt on the rising edge (EXTI 5–9, priority 5); the ISR latches the TIM3 count | The Z rising edge marks zero once per turn (`DOC-ENC-DS` §7.3) |
+| PB3 (Z) | GPIO input, pull-up, interrupt on the rising edge (EXTI 3, priority 5); the ISR latches the TIM3 count. Run 1 used PB9 | The Z rising edge marks zero once per turn (`DOC-ENC-DS` §7.3) |
 | Output | USART3 921600 on H2, one line every 100 ms; one extra line per Z | |
 
 `theta_e` is computed in integers, `(count % 4096) × 7 % 4096 × 360 / 4096`, with no offset yet (alignment is Stage 7). The firmware does not use `lib/foc` (that is Stage 5) and does not touch TIM1 or the SD pins; the build-time checks for SD1–SD4 low and TIM1 disabled are unchanged.
@@ -101,6 +101,41 @@ Not yet checked: 4096 counts per turn and the direction sign (both need a marked
 
 Earlier J-Link GPIO sampling (`build/hil/stage2/*.jlink`, 04:12–04:21, before this firmware) saw PB9 toggle, so Z may have worked then; it is not driven now.
 
+Cause, found by the user: the harness takes Z to U7-3 (PB3), not U7-4 (PB9). With J-Link, PB3 read low with no pull, pull-up and pull-down, so it is driven. Firmware moved Z to PB3 (`6adcd13`).
+
+## Run 2 (2026-10-14, 19:15–19:20)
+
+| Step | Result |
+|---|---|
+| Flash | Commit `6adcd13`, `zephyr.hex` SHA-256 `10392f58…`, `zephyr.bin` `533f26cc…`; `verifybin` OK. Same board, J-Link, bench as run 1 |
+| Registers after start | SD1–SD4 low, TIM1 not clocked (unchanged); PB3 input, `SYSCFG_EXTICR1 = 0x1000` (EXTI3 → port B), `EXTI_IMR1`/`RTSR1` bit 3 set, NVIC IRQ 9 enabled |
+| Turning | User: 5 turns clockwise, then counter-clockwise, viewed from the shaft end; magnet on the shaft end above the chip. Peak hand speed about 70 rpm (478 counts per 100 ms). UART log `build/hil/stage2/flash/uart_run2.log`, 2,200 count lines, no errors or warnings |
+
+Z lines from the log:
+
+```
+Z #1  (+1) mech 1008 pos   +1008, +0 since last Z
+Z #2  (+1) mech 1008 pos   +5104, +4096 since last Z
+Z #3  (+1) mech 1008 pos   +9200, +4096 since last Z
+Z #4  (+1) mech 1008 pos  +13296, +4096 since last Z
+Z #5  (+1) mech 1008 pos  +17392, +4096 since last Z
+Z #6  (+1) mech 1008 pos  +17392, +0 since last Z
+Z #7  (+1) mech 1008 pos  +13296, -4096 since last Z
+Z #8  (+1) mech 1008 pos   +9200, -4096 since last Z
+Z #9  (+1) mech 1008 pos   +5104, -4096 since last Z
+Z #10 (+1) mech 1008 pos   +1008, -4096 since last Z
+Z #11 (+1) mech 1008 pos   -3088, -4096 since last Z
+```
+
+Z #6 is the shaft passing zero again just after the turn-around. The rising edge comes at the same count (1008) in both directions, so the Z pulse is narrower than one count at this speed; the width difference expected in the procedure did not show up.
+
 ## Done when (roadmap)
 
-4096 counts per turn, correct sign, Z once per turn at the same count, no lost counts.
+| Criterion | Result |
+|---|---|
+| One turn = 4096 counts | **Pass**: all 9 same-direction Z-to-Z intervals are exactly ±4096 |
+| Sign matches the direction | **Pass**: clockwise viewed from the shaft end counts up, counter-clockwise counts down. This matches the datasheet (CW viewed from above the chip → A leads B) with A on TIM3_CH1 |
+| Z once per turn at the same count | **Pass**: 11 Z edges, one per zero crossing, all at `mech` 1008 |
+| No lost counts after many turns back and forth | **Pass**: after 5 turns up and 5 down, Z #10 lands on the same `pos` (+1008) as Z #1; 10+ turns at up to 70 rpm |
+
+Limits: hand speed only (up to 70 rpm); the count at motor speed (A/B edges every few µs) is checked again in Stage 6/7. The Z ISR runs at normal priority with interrupt latency; at hand speed that is far below one count. `theta_e` is arithmetic on the count (spot check: `mech` 1014 → 263.8°, as computed by hand); it has no offset until the Stage 7 alignment.
