@@ -208,6 +208,32 @@ Same setup, shaft free (user's choice for the iq tests). Raw: `build/hil/stage7/
 - 50 mA × 0.022 Nm/A ≈ 1.1 mNm is below the cogging/stiction torque, so the free shaft stayed still.
 - WCET margin is thin; the largest single item is `sinf`+`cosf` (up to 772 cycles). A table or a combined sin/cos would recover margin.
 
+### CORDIC, dead-time compensation, rotation offset `f396936` (2026-10-15)
+
+- **Sin/cos:** the BSP CORDIC (`src/sincos.{c,h}`: COSINE, q1.31, 24 iterations, one argument, two results) replaces every sinf/cosf in the control step; host builds use a sinf/cosf stub with the same angle mapping.
+- **Dead-time compensation** (mode 4, `dtc` +32, latched on `step_seq`, default off): a per-phase feed-forward of 0.75·V0 times clamp(i_ref,x / 50 mA), from the reference current. The PI gets the remaining headroom (at least 0.2 V); the total vector stays capped at 1.0 V.
+- **Rotation offset refinement** in mode 5: after L, 2 electrical turns forward then back at the 1 A voltage. offset_new = offset − (mean_f + mean_b)/2; fails on a slip (> 90°), |c| > 400 or an implausible load angle.
+- **Host:** DTC off 1.10 ms / on 0.15 ms (90 %, 1.3 % overshoot) with a per-phase dead-time plant; 84-detent cogging park bias −112 → 0 counts.
+- Design: `docs/evidence/dtc_cordic_offset_software.md`.
+
+**Incident before the flash: USB and DCBUS were connected together** for about a minute.
+- The user plugged in USB while the supply output was still on; the board kept running from DCBUS (VBUS 15.03 V live, uptime 31 min).
+- Flashing was held; the user switched the supply off; VBUS fell to 89–107 mV and the board kept running on USB without a reboot.
+- This breaks `HW-PWR-003` (USB_5V is tied to +5V through R35, 0 Ω). The board, the J-Link (VTref 3.316–3.320 V) and the USB port kept working; whether any part got warm is to be confirmed by the user.
+- Rule kept: before every flash, check VBUS < 1 V in the live UART log, not only the user's word.
+
+**Flash:** USB power, probe 63728769, SHA-256 `4b899fdf77b4f1edeed0943326595ddd58797923bd090eafead02d6b96c3f67d`, verify OK; **command block `0x2000159C`** (dtc +32). Boot benchmarks (max cycles):
+
+| Item | Max cycles |
+|---|---|
+| CORDIC sin+cos | **27** (sinf+cosf: 772) |
+| CORDIC max error (4096 angles) | 1.61e-6 vs sinf/cosf, 1.58e-6 vs double |
+| Mode-4 kernel + DTC + angle + speed | 1344 |
+| Mode 4 complete, unpowered path | 2082 |
+| Ident steps | ≤ 817 |
+
+Idle ISR 1890–1908 cycles (was about 2050); mode 4 with the stage off 2454–2522 (was 2603–2683); `vec_compare` PASS. Raw: `build/hil/stage7/dtc/`.
+
 ## Next (needs the user's go)
 
 Stage 7 first power, in the roadmap order, stopping at the first surprise:
