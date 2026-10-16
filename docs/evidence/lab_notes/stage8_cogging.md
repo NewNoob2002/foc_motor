@@ -197,3 +197,56 @@ Includes the fatal safe-off and the 2 KiB report stack.
   MOE = 1 is the normal stage-off state: PC0–PC2 analog and SD low keep the drivers off. The board was then reset through J-Link.
 - **Still to verify with DCBUS:** the crash hook while armed (SD1–SD3 must go from high to low).
 - Raw: `build/hil/stage8/*5027673*`.
+
+## Run 4 (DCBUS 15 V, 2026-10-16) — crash safe-off verified, map, ripple reduction
+
+Firmware `5027673`. The board booted fresh on DCBUS after USB was unplugged; the log shows the USB session ending and a new boot at VBUS 15.06 V. Probe 63728769, persistent J-Link session. Raw: `build/hil/stage8/` (`t_crash_armed_5027673.log`, `ident_run4.log`, `map_run4.log`, `speed_run4.log`, `run4_all.log`, `jl_run4.out`, `marks_run4.txt`).
+
+**1. Crash hook while armed** (idle, zero vector):
+
+| | SD1 (GPIOB ODR) | SD2/SD3 (GPIOA ODR) | GPIOC MODER | TIM1 BDTR | TIM1 CR1 |
+|---|---|---|---|---|---|
+| Armed | `0x1` | `0x6` | `0xFFFFFFEA` (PC0–PC2 AF) | `0x8000` (MOE) | `0xD1` |
+| 0.4 s after writing `CRAS` | `0x0` | `0x0` | `0xFFFFFFFF` (analog) | `0x0` | `0xD0` (CNT frozen at `0x7BC`) |
+
+- UART: "ZEPHYR FATAL ERROR 3: Kernel oops" at 29.800 s, then "fatal: power stage off (reason 3)" at 29.807 s. The 7 ms is the synchronous log flush, which runs after the register writes.
+- **The fatal path now switches the power stage off.** The pin-level timing was not measured (no scope).
+- The board was then reset through J-Link and came back with the stage off and no fault.
+
+**2. Identification:** direction −1, offset 1681, R 200 mΩ, V0 234 mV, L 70 µH.
+
+**3. Map:**
+- `cogmap_result phase 10 reason 0`, `cogmap_ok 1`, ff_valid 1. Gain fit I0 1093 mA, e1 0.2 %, e2 1.2 %.
+
+| Order | Amplitude (mA) | Phase (counts) |
+|---|---|---|
+| 1 | 2 | 2693 |
+| 2 | 5 | 2894 |
+| 7 | 17 | 1894 |
+| **14** | **178** | 1806 |
+| 28 | 38 | 3949 |
+| 42 | 7 | 2685 |
+| 84 | 12 | 3592 |
+
+- Friction 114 mA.
+- This matches the run 3 offline analysis (order 14: 180 mA, order 28: 38 mA, friction 114 mA), so **the map is repeatable**.
+- **Report stack:** unused 888 B after `dump_map`, so the peak is 1160 B. That is above the old 1024 B, which confirms the cause of run 3. 888 B is left in the 2048 B stack.
+
+**4. Speed loop** (mode 7, DTC on). Each line is a 1 kHz capture (`capspd`) of 256 samples at a constant reference. The feed-forward was switched with `cff` on a `step_seq` edge 2.5 s before its capture. "Order 14" is a least-squares sine fit at 14 × the measured rotation frequency.
+
+| Reference | cff | Mean | SD | Peak-to-peak | Order 14 | Order 28 | Speed-PI iq SD |
+|---|---|---|---|---|---|---|---|
+| 60 rpm | off | 59.7 rpm | 25.0 rpm | 90.8 rpm | 31.3 rpm (13.9 Hz) | 4.6 rpm | 116 mA |
+| 60 rpm | **on** | 59.4 rpm | **6.2 rpm** | 26.3 rpm | **2.8 rpm** | 2.1 rpm | 28 mA |
+| 100 rpm | off | 100.0 rpm | 14.8 rpm | 63.0 rpm | 17.8 rpm (23.3 Hz) | 1.4 rpm | 68 mA |
+| 100 rpm | **on** | 100.3 rpm | **5.3 rpm** | 24.9 rpm | **1.9 rpm** | 0.8 rpm | 24 mA |
+
+- **Order-14 ripple reduction: 11× at 60 rpm, 9.4× at 100 rpm.** Total SD reduction: 4.0× and 2.8×.
+- The "off" figures agree with stage 7 (SD 19.3 / 14.5 rpm).
+- The speed PI no longer fights the cogging: its iq SD falls 4×.
+- The remaining ripple has no single dominant line (35 Hz at 60 rpm; 55–62 Hz at 100 rpm; 3.9 Hz resolution). It is not analysed further here.
+
+**Timing and faults:**
+- ISR max: 1906 cycles in identification, 2368 in the map, 2270 in mode 7 with the feed-forward (budget 3400).
+- 0 overruns, 0 missed periods, no fault.
+- Disarmed at the end: SD low.

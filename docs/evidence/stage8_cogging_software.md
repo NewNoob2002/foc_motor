@@ -131,6 +131,9 @@ The 14/turn harmonic is recovered as 145 mA (true 138 mA, 5 % high).
 
 ## Not verified
 
-- On the target: WCET of mode 8 and of modes 4/7 with the feed-forward.
-- The gain-check result and the real ripple map.
-- The ripple reduction on the bench.
+Bench run 4 (2026-10-16, `docs/evidence/lab_notes/stage8_cogging.md`) closed the earlier open items:
+- **WCET:** mode 8 max 2368 cycles; mode 7 with the feed-forward max 2270 cycles.
+- **Real map:** order 14 = 178 mA, repeatable.
+- **Ripple:** order-14 speed ripple cut 11× at 60 rpm and 9.4× at 100 rpm.
+
+Still open: the order-84 term at this bin resolution, and J (unmeasured).
