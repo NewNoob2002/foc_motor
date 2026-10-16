@@ -239,33 +239,43 @@ static void test_ident_powered(void) {
     foc_ctrl_snapshot(&snap);
     CHECK(!snap.mode_refused && snap.mode == FOC_MODE_IDENT);
     CHECK(snap.ident_phase == IDENT_ALIGN_FIRST);
-    CHECK(snap.theta_e_count == IDENT_ALIGN_90 && snap.v_d > 0.0f && snap.v_d < 0.001f);
+    CHECK(snap.theta_e_count == 0U && snap.v_d > 0.0f && snap.v_d < 0.001f);
     CHECK(cmd.power_on && foc_ctrl_ident_get() == NULL);
     foc_ab_t vector = applied_vector(&cmd, snap.vbus);
 
-    CHECK(fabsf(vector.alpha) < 1e-5f && vector.beta > 0.0f);
+    CHECK(vector.alpha > 0.0f && fabsf(vector.beta) < 1e-5f);
 
-    /* Drive the synthetic current through alignment and decay so both fixed
-     * angles are checked against the original sinf/cosf Park calculation.
+    /* Drive each hold/decay and compare all three fixed-angle Park tables
+     * with an independent library-trig reference, including final zero.
      */
-    for (uint32_t angle = 0U; angle < 2U; angle++) {
+    static const uint32_t angles[] = {0U, IDENT_ALIGN_120, IDENT_ALIGN_240, 0U};
+    static const motor_ident_phase_t phases[] = {IDENT_ALIGN_FIRST, IDENT_ALIGN_SECOND, IDENT_ALIGN_THIRD,
+                                                 IDENT_ALIGN_ZERO};
+
+    for (uint32_t angle = 0U; angle < sizeof(angles) / sizeof(angles[0]); angle++) {
         if (angle != 0U) {
             for (uint32_t k = 0U; k < IDENT_ALIGN_HOLD_N + 2U * IDENT_REACHED_N + 2000U; k++) {
-                sample.ia_code = 2048U;
-                sample.ic_code = snap.ident_phase == IDENT_ALIGN_FIRST ? 1994U : 2048U;
+                float theta = (float)angles[angle - 1U] * 0.0015339808f;
+                float ia = snap.ident_phase == IDENT_ALIGN_DECAY ? 0.0f : cosf(theta);
+                float ic =
+                    snap.ident_phase == IDENT_ALIGN_DECAY ? 0.0f : -0.5f * cosf(theta) - 0.8660254f * sinf(theta);
+
+                sample.ia_code = (uint16_t)lroundf(2048.0f + ia / ANALOG_PHASE_A_PER_CODE);
+                sample.ic_code = (uint16_t)lroundf(2048.0f + ic / ANALOG_PHASE_A_PER_CODE);
                 foc_ctrl_step(&sample, &cmd);
                 foc_ctrl_snapshot(&snap);
-                if (snap.ident_phase == IDENT_ALIGN_ZERO) {
+                if (snap.ident_phase == phases[angle]) {
+                    CHECK(snap.v_d == 0.0f);
                     break;
                 }
             }
-            CHECK(snap.ident_phase == IDENT_ALIGN_ZERO);
+            CHECK(snap.ident_phase == phases[angle]);
         }
         sample.ia_code = 2079U;
         sample.ic_code = 2004U;
         foc_ctrl_step(&sample, &cmd);
         foc_ctrl_snapshot(&snap);
-        CHECK(snap.theta_e_count == (angle == 0U ? IDENT_ALIGN_90 : 0U));
+        CHECK(snap.theta_e_count == angles[angle]);
         float theta = (float)snap.theta_e_count * 0.0015339808f;
         foc_sincos_t sc = {.sin_theta = sinf(theta), .cos_theta = cosf(theta)};
         foc_abc_t current = {.a = 31.0f * ANALOG_PHASE_A_PER_CODE,
@@ -275,6 +285,9 @@ static void test_ident_powered(void) {
 
         CHECK_NEAR(snap.i_d, expected.d, 1e-7);
         CHECK_NEAR(snap.i_q, expected.q, 1e-7);
+        vector = applied_vector(&cmd, snap.vbus);
+        CHECK_NEAR(vector.alpha, snap.v_d * sc.cos_theta, 1e-6);
+        CHECK_NEAR(vector.beta, snap.v_d * sc.sin_theta, 1e-6);
     }
     foc_ctrl_cmd.arm = 0U;
     foc_ctrl_step(&sample, &cmd);

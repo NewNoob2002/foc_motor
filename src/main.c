@@ -166,9 +166,10 @@ static int32_t ident_units(float value, float scale) {
 
 /** Print one terminal identification with explicit units, then release its ISR buffer. */
 static __noinline void dump_ident(const foc_ctrl_ident_t* r) {
-    LOG_INF("ident state %u, fail %u; enc90 %u enc0 %u delta %d counts, direction %d, offset %u counts",
-            (unsigned int)r->state, (unsigned int)r->fail_reason, r->enc_90, r->enc_0, r->delta_mech, r->direction,
-            r->offset_e);
+    LOG_INF("ident state %u, fail %u; enc120 %u enc240 %u enc360 %u raw mechanical counts", (unsigned int)r->state,
+            (unsigned int)r->fail_reason, r->enc_120, r->enc_240, r->enc_360);
+    LOG_INF("ident delta_a %d delta_b %d mechanical counts, direction %d, offset %u electrical counts", r->delta_a,
+            r->delta_b, r->direction, r->offset_e);
     k_msleep(CAPTURE_LINE_PAUSE_MS);
     for (uint32_t k = 0U; k < IDENT_R_POINTS; k++) {
         LOG_INF("ident R point %u: %d mV, %d mA", k, milli(r->points[k].v), milli(r->points[k].i));

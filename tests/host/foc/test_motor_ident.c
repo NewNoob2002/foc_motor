@@ -17,6 +17,10 @@ typedef struct {
     uint32_t enc0;
     uint32_t raw_base;
     double i0;
+    double rotor; /* unwrapped electrical counts in the physical command frame */
+    double stop_rotor;
+    uint32_t last_theta;
+    bool half_move;
     bool stuck;
     bool noisy;
     uint32_t spike_burst;
@@ -36,15 +40,37 @@ static float current_sample(plant_t* p) {
     return p->noisy ? (float)(round((p->i + noise) / 0.016) * 0.016) : (float)p->i;
 }
 
-/** Snap the unloaded rotor to the requested angle, including encoder wrap and reverse wiring. */
-static uint32_t encoder_sample(const plant_t* p, uint32_t theta) {
-    int32_t move = p->stuck ? 0 : (int32_t)lround((double)theta / IDENT_POLE_PAIRS) * p->direction;
+/** Quantize the physical rotor position, preserving raw counter wrap and reverse wiring. */
+static uint32_t encoder_sample(const plant_t* p) {
+    int32_t move = (int32_t)lround(p->rotor / IDENT_POLE_PAIRS) * p->direction;
 
-    return p->raw_base + (uint32_t)((int32_t)p->enc0 + move + (int32_t)IDENT_COUNTS) % IDENT_COUNTS;
+    return p->raw_base + (uint32_t)((int32_t)p->enc0 + move + 4 * (int32_t)IDENT_COUNTS) % IDENT_COUNTS;
+}
+
+/** Integrate overdamped sinusoidal torque, with static friction and an optional half-travel stop. */
+static void rotor_step(plant_t* p, uint32_t theta) {
+    const double radians_per_count = 6.283185307179586 / (double)IDENT_COUNTS;
+    double error = remainder((double)theta - p->rotor, (double)IDENT_COUNTS);
+    double torque = sin(error * radians_per_count) * p->i / (double)IDENT_ALIGN_A;
+
+    if (theta != p->last_theta) {
+        p->stop_rotor = p->rotor + 0.5 * error;
+        p->last_theta = theta;
+    }
+    if (p->stuck || fabs(torque) < 0.1) {
+        return;
+    }
+    double move = 8.0 * torque;
+
+    if (p->half_move && fabs(move) > fabs(p->stop_rotor - p->rotor)) {
+        move = p->stop_rotor - p->rotor;
+    }
+    p->rotor += move;
 }
 
 /** Integrate an exact per-period RL solution with inverter loss frozen at the initial current. */
-static void plant_step(plant_t* p, float voltage) {
+static void plant_step(plant_t* p, float voltage, uint32_t theta) {
+    rotor_step(p, theta);
     double effective_v = p->pending_v - p->vdt * tanh(p->i / (p->i0 > 0.0 ? p->i0 : 0.3));
     double decay = exp(-p->r * (double)IDENT_PERIOD_S / p->l);
 
@@ -58,12 +84,15 @@ static motor_ident_t run_plant(plant_t* p) {
     motor_ident_t m;
     motor_ident_out_t out;
     uint32_t r_n = 0U;
+    uint32_t angle_step = 0U;
+    double initial_rotor = p->rotor;
+    static const uint32_t angles[] = {0U, IDENT_ALIGN_120, IDENT_ALIGN_240, 0U};
 
     motor_ident_start(&m);
-    for (uint32_t k = 0U; k < 200002U; k++) {
+    for (uint32_t k = 0U; k < IDENT_RUN_TIMEOUT_N + 2U; k++) {
         motor_ident_in_t in = {
             .i_d = current_sample(p),
-            .enc_count = encoder_sample(p, m.theta_e_count),
+            .enc_count = encoder_sample(p),
             .power_on = true,
         };
 
@@ -74,20 +103,41 @@ static motor_ident_t run_plant(plant_t* p) {
             }
             r_n++;
         }
+        uint32_t previous_angle = m.theta_e_count;
+
         motor_ident_step(&m, &in, &out);
+        if (previous_angle != out.theta_e_count) {
+            angle_step++;
+            CHECK(angle_step < sizeof(angles) / sizeof(angles[0]));
+            CHECK(out.theta_e_count == angles[angle_step]);
+            CHECK(out.v_d == 0.0f); /* Every switch follows a verified zero-current decay. */
+            if (angle_step == 1U && !p->stuck && !p->half_move) {
+                /* 300 degrees is unstable for the 120 pull, but has |sin|=0.866
+                 * during the zero park, so cannot remain there with stiction 0.1.
+                 */
+                CHECK(fabs(remainder(p->rotor - ((double)IDENT_ALIGN_120 + 0.5 * IDENT_COUNTS), (double)IDENT_COUNTS))
+                      > 100.0);
+                if (initial_rotor == 0.5 * IDENT_COUNTS) {
+                    CHECK(p->rotor == initial_rotor); /* Reproduce the friction-held unstable first park. */
+                }
+            }
+            if (angle_step == 2U && !p->stuck && !p->half_move) {
+                CHECK(fabs(remainder(p->rotor - IDENT_ALIGN_120, (double)IDENT_COUNTS)) < 70.0);
+            }
+        }
         CHECK(isfinite(out.v_d) && fabsf(out.v_d) <= 1.0f);
         if (out.done || out.failed) {
             CHECK(out.v_d == 0.0f);
             return m;
         }
-        plant_step(p, out.v_d);
+        plant_step(p, out.v_d, out.theta_e_count);
     }
     CHECK(false);
     return m;
 }
 
 /** Check accuracy for reachable motors with both encoder directions and realistic ADC noise. */
-static void test_accuracy(double r, double l, int direction, uint32_t enc0) {
+static void test_accuracy(double r, double l, int direction, uint32_t enc0, double start_degrees) {
     plant_t p = {.r = r,
                  .l = l,
                  .vdt = 0.15,
@@ -95,6 +145,7 @@ static void test_accuracy(double r, double l, int direction, uint32_t enc0) {
                  .direction = direction,
                  .enc0 = enc0,
                  .raw_base = 4096U,
+                 .rotor = start_degrees * IDENT_COUNTS / 360.0,
                  .noisy = true};
     motor_ident_t m = run_plant(&p);
     motor_ident_result_t* result = &m.result;
@@ -103,16 +154,29 @@ static void test_accuracy(double r, double l, int direction, uint32_t enc0) {
     if (direction < 0) {
         offset = (IDENT_COUNTS - offset) % IDENT_COUNTS;
     }
-    printf("R %.3f L %.0f uH dir %d: state %u reason %u, R %.6f L %.3f uH, ipp %.3f A, %.3f s\n", r, l * 1e6, direction,
-           (unsigned int)result->state, (unsigned int)result->fail_reason, (double)result->r, (double)result->l * 1e6,
-           (double)result->ipp, (double)m.run_n * (double)IDENT_PERIOD_S);
+    printf("R %.3f L %.0f uH dir %d start %.0f deg: state %u reason %u, R %.6f L %.3f uH, ipp %.3f A, %.3f s\n", r,
+           l * 1e6, direction, start_degrees, (unsigned int)result->state, (unsigned int)result->fail_reason,
+           (double)result->r, (double)result->l * 1e6, (double)result->ipp, (double)m.run_n * (double)IDENT_PERIOD_S);
     CHECK(result->state == IDENT_DONE && result->fail_reason == IDENT_FAIL_NONE);
     CHECK_NEAR(result->r, r, r * 0.05);
     CHECK_NEAR(result->l, l, l * 0.10);
     CHECK(result->direction == direction);
-    CHECK(result->enc_0 == p.raw_base + enc0 && result->offset_e == offset);
-    CHECK(result->enc_90 == encoder_sample(&p, IDENT_ALIGN_90));
-    CHECK(result->delta_mech == -direction * 146);
+    uint32_t final_offset = result->enc_360 * IDENT_POLE_PAIRS % IDENT_COUNTS;
+
+    if (direction < 0) {
+        final_offset = (IDENT_COUNTS - final_offset) % IDENT_COUNTS;
+    }
+    CHECK(result->offset_e == final_offset); /* Exactly zero at the recorded final position. */
+    /* The physical zero is only known to the stiction band asin(0.1), plus
+     * encoder quantization; snapping exactly to the command would hide this.
+     */
+    CHECK(fabs(remainder((double)result->offset_e - offset, (double)IDENT_COUNTS)) <= 70.0);
+    CHECK(result->enc_120 >= p.raw_base && result->enc_120 < p.raw_base + IDENT_COUNTS);
+    CHECK(result->enc_240 >= p.raw_base && result->enc_240 < p.raw_base + IDENT_COUNTS);
+    CHECK(result->enc_360 >= p.raw_base && result->enc_360 < p.raw_base + IDENT_COUNTS);
+    CHECK(result->delta_a * direction > 0 && result->delta_b * direction > 0);
+    CHECK_NEAR(fabs((double)result->delta_a) * IDENT_POLE_PAIRS, IDENT_ALIGN_120, IDENT_ALIGN_TOL_E);
+    CHECK_NEAR(fabs((double)result->delta_b) * IDENT_POLE_PAIRS, IDENT_ALIGN_120, IDENT_ALIGN_TOL_E);
     CHECK(!result->r_nonlinear);
     CHECK_NEAR(result->v0, 0.15, 0.015);
     for (uint32_t k = 1U; k < IDENT_R_POINTS; k++) {
@@ -251,18 +315,85 @@ static void test_safety(void) {
     in.power_on = true;
     motor_ident_step(&m, &in, &out);
     CHECK(out.failed && out.v_d == 0.0f);
+    /* Four alignment holds, three decays, five R targets and one bias servo.
+     * Include all arrival budgets, R settling/averages, bias dwell and L flush.
+     */
+    const uint32_t phase_bound = (4U + 3U + IDENT_R_POINTS + 1U) * IDENT_SERVO_TIMEOUT_N + 4U * IDENT_ALIGN_HOLD_N
+                                 + IDENT_R_POINTS * (IDENT_R_SETTLE_N + IDENT_R_AVG_N) + IDENT_R_SETTLE_N
+                                 + IDENT_L_CYCLES * 2U * IDENT_L_HALF + 2U;
+
+    CHECK(IDENT_RUN_TIMEOUT_N > phase_bound);
     motor_ident_start(&m);
-    m.run_n = 200000U;
+    m.run_n = IDENT_RUN_TIMEOUT_N;
     motor_ident_step(&m, &in, &out);
     CHECK(out.failed && out.v_d == 0.0f && m.result.fail_reason == IDENT_FAIL_RUN_TIMEOUT);
 }
 
-/** Reject a stationary encoder even when the electrical current servo succeeds. */
-static void test_stuck_encoder(void) {
-    plant_t p = {.r = 0.1, .l = 100e-6, .vdt = 0.15, .rng = 1U, .direction = 1, .enc0 = 3745U, .stuck = true};
-    motor_ident_t m = run_plant(&p);
+/** Reject an immobile rotor and a rotor stopped halfway through each commanded move, in both directions. */
+static void test_alignment_failures(void) {
+    for (int direction = -1; direction <= 1; direction += 2) {
+        for (uint32_t fault = 0U; fault < 2U; fault++) {
+            plant_t p = {.r = 0.1,
+                         .l = 100e-6,
+                         .vdt = 0.15,
+                         .rng = 1U,
+                         .direction = direction,
+                         .enc0 = 3745U,
+                         .stuck = fault == 0U,
+                         .half_move = fault == 1U};
+            motor_ident_t m = run_plant(&p);
 
-    CHECK(m.result.state == IDENT_FAILED && m.result.fail_reason == IDENT_FAIL_ALIGNMENT);
+            CHECK(m.result.state == IDENT_FAILED && m.result.fail_reason == IDENT_FAIL_ALIGNMENT);
+        }
+    }
+}
+
+/** Check each delta independently, sign agreement, tolerance edges, raw counts, and wrap in both directions. */
+static void test_alignment_validation(void) {
+    static const struct {
+        int32_t a;
+        int32_t b;
+        bool valid;
+    } cases[] = {
+        {195, 195, true},  {167, 223, true},   {223, 167, true},   {166, 195, false},
+        {224, 195, false}, {195, 166, false},  {195, 224, false},  {195, 0, false},
+        {0, 195, false},   {195, -195, false}, {-195, 195, false},
+    };
+
+    for (int32_t direction = -1; direction <= 1; direction += 2) {
+        for (uint32_t k = 0U; k < sizeof(cases) / sizeof(cases[0]); k++) {
+            motor_ident_t m;
+            motor_ident_out_t out;
+            int32_t start = direction > 0 ? 4070 : 25;
+            int32_t middle = (start + direction * cases[k].a + (int32_t)IDENT_COUNTS) % (int32_t)IDENT_COUNTS;
+            int32_t end = (middle + direction * cases[k].b + (int32_t)IDENT_COUNTS) % (int32_t)IDENT_COUNTS;
+            motor_ident_in_t in = {.i_d = 1.0f, .enc_count = (uint32_t)end + 8192U, .power_on = true};
+
+            motor_ident_start(&m);
+            m.result.state = IDENT_ALIGN_ZERO;
+            m.result.enc_120 = (uint32_t)start + 4096U;
+            m.result.enc_240 = (uint32_t)middle;
+            m.reached = true;
+            m.hold_n = IDENT_ALIGN_HOLD_N - 1U;
+            m.filtered_i = 1.0f;
+            m.servo_v = 0.25f;
+            motor_ident_step(&m, &in, &out);
+            CHECK(m.result.enc_360 == in.enc_count);
+            CHECK(m.result.delta_a == direction * cases[k].a);
+            CHECK(m.result.delta_b == direction * cases[k].b);
+            if (cases[k].valid) {
+                CHECK(m.result.state == IDENT_RESISTANCE && !out.failed);
+                CHECK(m.result.direction == direction);
+                CHECK(((uint32_t)(direction * end * (int32_t)IDENT_POLE_PAIRS - (int32_t)m.result.offset_e)
+                       % IDENT_COUNTS)
+                      == 0U);
+                CHECK(out.theta_e_count == 0U && out.v_d == 0.25f);
+            } else {
+                CHECK(out.failed && out.v_d == 0.0f && m.result.fail_reason == IDENT_FAIL_ALIGNMENT);
+                CHECK(m.result.direction == 0 && m.result.offset_e == 0U);
+            }
+        }
+    }
 }
 
 /** Reject nonpositive L response and excessive inferred ripple at the end of injection. */
@@ -305,9 +436,11 @@ static void test_dirty_start(void) {
     /* Compare values rather than padding, whose representation is not part of the contract. */
     CHECK(dirty.result.state == clean.result.state);
     CHECK(dirty.result.fail_reason == clean.result.fail_reason);
-    CHECK(dirty.result.enc_90 == clean.result.enc_90);
-    CHECK(dirty.result.enc_0 == clean.result.enc_0);
-    CHECK(dirty.result.delta_mech == clean.result.delta_mech);
+    CHECK(dirty.result.enc_120 == clean.result.enc_120);
+    CHECK(dirty.result.enc_240 == clean.result.enc_240);
+    CHECK(dirty.result.enc_360 == clean.result.enc_360);
+    CHECK(dirty.result.delta_a == clean.result.delta_a);
+    CHECK(dirty.result.delta_b == clean.result.delta_b);
     CHECK(dirty.result.direction == clean.result.direction);
     CHECK(dirty.result.offset_e == clean.result.offset_e);
     for (uint32_t k = 0U; k < IDENT_R_POINTS; k++) {
@@ -344,9 +477,11 @@ static void test_result_copy(void) {
     motor_ident_result_t src = {
         .state = IDENT_FAILED,
         .fail_reason = IDENT_FAIL_RIPPLE,
-        .enc_90 = 1234U,
-        .enc_0 = 1088U,
-        .delta_mech = -146,
+        .enc_120 = 1234U,
+        .enc_240 = 1429U,
+        .enc_360 = 1624U,
+        .delta_a = 195,
+        .delta_b = 195,
         .direction = 1,
         .offset_e = 3520U,
         .r = 0.1f,
@@ -365,8 +500,9 @@ static void test_result_copy(void) {
     (void)memset(&dst, 0xa5, sizeof(dst));
     motor_ident_result_copy(&dst, &src);
     CHECK(dst.state == src.state && dst.fail_reason == src.fail_reason);
-    CHECK(dst.enc_90 == src.enc_90 && dst.enc_0 == src.enc_0);
-    CHECK(dst.delta_mech == src.delta_mech && dst.direction == src.direction && dst.offset_e == src.offset_e);
+    CHECK(dst.enc_120 == src.enc_120 && dst.enc_240 == src.enc_240 && dst.enc_360 == src.enc_360);
+    CHECK(dst.delta_a == src.delta_a && dst.delta_b == src.delta_b);
+    CHECK(dst.direction == src.direction && dst.offset_e == src.offset_e);
     for (uint32_t k = 0U; k < IDENT_R_POINTS; k++) {
         CHECK(dst.points[k].i == src.points[k].i && dst.points[k].v == src.points[k].v);
     }
@@ -384,8 +520,17 @@ int main(void) {
     test_dirty_start();
     test_result_copy();
     for (int direction = -1; direction <= 1; direction += 2) {
-        test_accuracy(0.1, 100e-6, direction, 3745U);
-        test_accuracy(0.2, 300e-6, direction, direction > 0 ? 4000U : 50U);
+        /* 180 is unstable for the first park. The last start is exactly
+         * 2048 counts from the quantized 120 command (299.970703125 degrees),
+         * but the first park moves it away (see run_plant).
+         */
+        const double starts[] = {0.0, 90.0, 180.0, 270.0,
+                                 ((double)IDENT_ALIGN_120 + 0.5 * (double)IDENT_COUNTS) * 360.0 / IDENT_COUNTS};
+
+        for (uint32_t k = 0U; k < sizeof(starts) / sizeof(starts[0]); k++) {
+            test_accuracy(0.1, 100e-6, direction, 3745U, starts[k]);
+            test_accuracy(0.2, 300e-6, direction, direction > 0 ? 4000U : 50U, starts[k]);
+        }
         /* 1 ohm needs >1.0 V even for ALIGN, before the unreachable 1.5 A R point. */
         test_unreachable(1.0, 1e-3, direction);
     }
@@ -394,7 +539,8 @@ int main(void) {
     test_r_spikes();
     test_overcurrent();
     test_safety();
-    test_stuck_encoder();
+    test_alignment_failures();
+    test_alignment_validation();
     test_l_failures();
     test_nonlinear_resistance();
     return foc_test_result("test_motor_ident");

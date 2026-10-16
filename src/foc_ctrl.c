@@ -140,15 +140,33 @@ static uint32_t theta_e_count(uint32_t enc_count) {
     return ((enc_count % ENCODER_COUNTS_PER_REV) * POLE_PAIRS) % ENCODER_COUNTS_PER_REV;
 }
 
-/** Return constant-folded trig for the only two angles emitted by motor identification. */
+/** Return float32 trig constants for the module contract; unknown angles suppress the vector. */
 static foc_sincos_t ident_sincos(uint32_t e_count) {
     foc_sincos_t sc;
 
-    /* Keep the original float32 angle expression, including cos(pi/2)'s small
-     * rounding residual. Constant arguments fold to loads in the ARM build.
+    /* Rounded sin/cos of float32(count * RAD_PER_E_COUNT), evaluated offline.
+     * Explicit literals avoid dependence on compiler trig folding. A contract
+     * violation returns (0, 0): inverse Park then emits zero applied voltage,
+     * rather than silently exciting the rotor at an unrelated angle.
      */
-    sc.sin_theta = e_count == 0U ? 0.0f : sinf((float)IDENT_ALIGN_90 * RAD_PER_E_COUNT);
-    sc.cos_theta = e_count == 0U ? 1.0f : cosf((float)IDENT_ALIGN_90 * RAD_PER_E_COUNT);
+    switch (e_count) {
+        case 0U:
+            sc.sin_theta = 0.0f;
+            sc.cos_theta = 1.0f;
+            break;
+        case IDENT_ALIGN_120:
+            sc.sin_theta = 0.866280973f;
+            sc.cos_theta = -0.499557108f;
+            break;
+        case IDENT_ALIGN_240:
+            sc.sin_theta = -0.866280913f;
+            sc.cos_theta = -0.499557137f;
+            break;
+        default:
+            sc.sin_theta = 0.0f;
+            sc.cos_theta = 0.0f;
+            break;
+    }
     return sc;
 }
 

@@ -1,27 +1,114 @@
 # Motor identification: software verification
 
-This change implements `FOC_MODE_IDENT = 5`: 90-degree alignment, current decay before switching to zero degrees, five current-regulated R points, a return to the 1 A bias, and delayed square-wave L measurement. It does not change `power_guard` limits or arm conditions. No firmware was flashed and no hardware was accessed. These are software/model results, not HIL or measured ISR timing evidence.
+`FOC_MODE_IDENT = 5` now aligns at 0, 120, 240 and 360 electrical degrees, with current decay before every angle switch, then runs the unchanged five current-regulated R points, return to the 1 A bias, and delayed square-wave L measurement from the final zero-degree position. This corrects the direction ambiguity observed in two bench runs of firmware `a96018a`. It does not change `power_guard` limits or arm conditions. No firmware was flashed and no hardware was accessed for this correction. These are software/model results, not HIL or measured ISR timing evidence.
 
 ## Contracts and bounded work
 
 `motor_ident_step()` owns fixed storage and takes one sample per 50 us PWM period. The current passed by control is Park-transformed at the angle requested on the previous call. The output voltage of call k starts at counter top k+1, so the increment i[k+2]-i[k+1] belongs to output k. Injection keeps the last two samples for its final increments, then returns zero. DONE and FAILED remain latched until the next mode-entry restart.
 
-The servo uses Ki = 5 V/(A s), 0..0.9 V saturation, a 5 ms current filter, a continuous 20 ms arrival band, and a 1 s arrival timeout for every target. A 10 s absolute timeout also bounds the whole run. Four consecutive d-axis samples with |i_d| > 1.8 A (200 us) abort with zero voltage on the fourth step; any sample at or below the threshold resets the counter. Nonfinite current, disarm or loss of power still aborts immediately. Single-sample protection remains with the unchanged global 2 A per-phase ISR trip in `power_guard` (about 5 sigma above 1.5 A at SD 0.1 A); the identification limit only stops a slow runaway of its own servo without reacting to isolated ADC noise spikes. Leaving IDENT aborts with CANCELLED; results retain completed measurements.
+The servo uses Ki = 5 V/(A s), 0..0.9 V saturation, a 5 ms current filter, a continuous 20 ms arrival band, and a 1 s arrival timeout for every target. An 18 s absolute timeout (360000 PWM periods) also bounds the whole run. Four consecutive d-axis samples with |i_d| > 1.8 A (200 us) abort with zero voltage on the fourth step; any sample at or below the threshold resets the counter. Nonfinite current, disarm or loss of power still aborts immediately. Single-sample protection remains with the unchanged global 2 A per-phase ISR trip in `power_guard` (about 5 sigma above 1.5 A at SD 0.1 A); the identification limit only stops a slow runaway of its own servo without reacting to isolated ADC noise spikes. Leaving IDENT aborts with CANCELLED; results retain completed measurements.
 
 Terminal results use a separate fixed buffer and atomic get/release handoff. A new run can restart on a mode edge without modifying a result held by the report thread. If a completed run is waiting behind an older unread result, it publishes after release; repeated further mode-edge restarts can supersede that unpublished run, since this is a single-result interface rather than a queue.
 
-Normal servo/injection steps use roughly 8–15 single-precision arithmetic operations, plus comparisons, clamp operations and fixed integer bookkeeping. There are no per-period array loops or transcendental operations in the module. The R fit runs once: three loops of four points (12 bounded iterations), roughly 60 arithmetic operations including divisions. Reset/terminal publication also have fixed-size zeroing/copy costs. The ARM object has only `fminf`, `fmaxf`, and compiler-generated `memset` as undefined symbols, with no RTOS or allocation dependency. Existing Clarke/Park, sine/cosine, inverse Park and SVPWM costs remain in control. Actual total ISR WCET, including fit, reset and publication, still needs DWT measurement on the target; no timing budget is claimed as hardware-verified.
+Ordinary servo/injection steps use float32 arithmetic, comparisons, clamps and fixed integer bookkeeping. There are no library trig calls, byte-loop `memset`/`memcpy`, or per-period divisions in the identification module. Reset and publication retain the volatile scalar-store pattern from the WCET fix. The R fit runs once with three four-point loops and two divisions; terminal L calculation has three divisions. Control uses explicit sine/cosine constants for the module's three possible angles; unsupported angles return `(0, 0)`, suppressing the applied voltage through inverse Park. Existing SVPWM and vector-cap math is unchanged. Actual total ISR WCET, including alignment validation, fit, reset and publication, still needs DWT measurement on the target; no timing budget is claimed as hardware-verified.
+
+## Encoder alignment correction
+
+The command counts are `round(k * 4096 / 3)` for k = 0, 1, 2, 3: **0, 1365, 2731, 0** modulo 4096. This rounds each absolute angle consistently rather than accumulating a rounded 1365-count increment. The command gaps are 1365, 1366 and 1365 electrical counts. Each hold uses the existing 1.0 A servo and 10000-period (0.5 s) dwell after arrival. Three `IDENT_ALIGN_DECAY` visits remove voltage and verify the zero-current band before switching angles.
+
+The first zero-degree hold only parks the rotor. With sinusoidal torque and adequate settling, it leaves the rotor near stable 0 degrees or friction-held unstable 180 degrees. Switching to 120 degrees gives a +120-degree or -60-degree path to the same stable point; neither parked position is the second command's unstable equilibrium (approximately 300 degrees). A rotor initially at 300 degrees has torque magnitude about 0.866 of full torque during the first zero park, so it cannot remain there in the host model with static-friction threshold 0.1. The claim that the 120-degree pull always moves at most +/-60 degrees is incorrect; the capture argument relies on the preceding park. Finite settling, load and actual friction still require bench evidence.
+
+Only the final three raw TIM3 readings are retained: `enc_120`, `enc_240`, `enc_360` (mechanical encoder counts). `delta_a` is the signed shortest mechanical displacement from 120 to 240 degrees; `delta_b` is from 240 to 360 degrees, each wrapped to [-2048, 2048] counts. Both must be nonzero and have the same sign, and each must satisfy `abs(7 * abs(delta) - 1365) <= 200` electrical counts. The one-count difference of the middle command gap is inside this tolerance. Positive deltas mean `direction = +1` (encoder increases with electrical angle); negative deltas mean `direction = -1`. This reverses the old sign decision for its negative 90-to-0-degree command. The known bench direction is -1; no new hardware result is asserted.
+
+`offset_e = (direction * enc_360 * 7) mod 4096`, normalized to [0, 4095] electrical counts, so `theta_e = (direction * enc * 7 - offset_e) mod 4096` is exactly zero at the recorded final position. The report prints the three raw readings and two signed deltas with mechanical-count units, direction, and offset with electrical-count units. R/L phases, targets, fit and sample-delay association are unchanged. `src/foc_bench.c` fixtures use the initial servo and R/L states without old angle/result-field dependencies, so require no edits.
+
+The new absolute bound covers even late successful arrivals: 13 arrival budgets (four alignment holds, three decays, five R targets, one bias target), four alignment dwells, five R settling/averaging windows, the bias dwell, and L injection including its two flush samples total at most `13*20000 + 4*10000 + 5*(4000+2000) + 4000 + 20002 = 354002` periods (17.7001 s, conservatively counting the arrival period again). `IDENT_RUN_TIMEOUT_N` increases from 200000 to 360000 periods (18 s). A host assertion also checks this bound against the phase constants.
+
+The host plant integrates an overdamped rotor with per-period motion proportional to `sin(theta_cmd - theta_rotor) * i / I_align`, stopping when the normalized torque magnitude is below 0.1. It no longer snaps to commanded angles. Tests cover both encoder directions at starts of 0, 90, 180, 270 degrees and exactly 180 degrees from the quantized 120-degree command (3413 electrical counts = 299.970703125 degrees). The 180-degree start explicitly remains stationary through the first park, reproducing the problematic unstable start; the second command still captures it. The last start moves away during the first park, and every successful run checks capture at 120 degrees. Both plant parameter sets retain R accuracy within 5%, L within 10%, and the existing nonlinear-resistance and inverter-loss assertions. Offset must be exact at the recorded final position and within 70 electrical counts of the physical zero (the `asin(0.1)` friction band plus encoder quantization). A stationary rotor and a rotor physically stopped halfway through each move fail ALIGNMENT in both directions. Additional direct state-machine cases check independent magnitude failures, tolerance edges, opposing signs, zero deltas, raw-count preservation and wrapping.
+
+## Alignment correction verification
+
+Executed in the task worktree:
+
+```sh
+cmake -S tests/host/foc -B build/host-align && cmake --build build/host-align && ctest --test-dir build/host-align --output-on-failure
+build/host-align/test_motor_ident
+source /home/gtc/zephyrproject/.venv/bin/activate
+ZEPHYR_BASE=/home/gtc/zephyrproject/zephyr west build -p always -b foc_motor -d build/arm-align . -- -DBUILD_VERSION=v4.4.2
+/home/gtc/zephyr-sdk-1.0.1/gnu/arm-zephyr-eabi/bin/arm-zephyr-eabi-size build/arm-align/zephyr/zephyr.elf
+/home/gtc/zephyr-sdk-1.0.1/gnu/arm-zephyr-eabi/bin/arm-zephyr-eabi-nm -S build/arm-align/zephyr/zephyr.elf
+/home/gtc/zephyr-sdk-1.0.1/gnu/arm-zephyr-eabi/bin/arm-zephyr-eabi-objdump -d build/arm-align/zephyr/zephyr.elf > build/arm-align-disassembly.txt
+clang-format -i src/motor_ident.c src/motor_ident.h src/foc_ctrl.c src/main.c tests/host/foc/test_motor_ident.c tests/host/foc/test_foc_ctrl.c
+clang-format --dry-run --Werror src/motor_ident.c src/motor_ident.h src/foc_ctrl.c src/main.c tests/host/foc/test_motor_ident.c tests/host/foc/test_foc_ctrl.c
+clang-tidy -p build/host-align src/motor_ident.c src/foc_ctrl.c tests/host/foc/test_motor_ident.c tests/host/foc/test_foc_ctrl.c
+clang-tidy -p build/align-tidy src/motor_ident.c src/foc_ctrl.c src/main.c
+git diff --check
+```
+
+Host tail (warnings-as-errors, ASan/UBSan):
+
+```text
+    Start 5: test_foc_ctrl
+5/7 Test #5: test_foc_ctrl ....................   Passed
+    Start 6: test_motor_ident
+6/7 Test #6: test_motor_ident .................   Passed
+    Start 7: vec_compare_selftest
+7/7 Test #7: vec_compare_selftest .............   Passed
+
+100% tests passed, 0 tests failed out of 7
+```
+
+All 20 noisy plant success cases complete in 5.735 s (0.1 ohm, 100 uH) or 6.264 s (0.2 ohm, 300 uH), with correct direction and offset. Representative output:
+
+```text
+R 0.100 L 100 uH dir -1 start 180 deg: state 9 reason 0, R 0.103664 L 99.444 uH, ipp 0.402 A, 5.735 s
+R 0.200 L 300 uH dir -1 start 180 deg: state 9 reason 0, R 0.201526 L 298.004 uH, ipp 0.134 A, 6.264 s
+R 0.100 L 100 uH dir 1 start 180 deg: state 9 reason 0, R 0.103664 L 99.444 uH, ipp 0.402 A, 5.735 s
+R 0.200 L 300 uH dir 1 start 180 deg: state 9 reason 0, R 0.201526 L 298.004 uH, ipp 0.134 A, 6.264 s
+test_motor_ident: all checks passed
+```
+
+A temporary C11/ASan/UBSan harness under ignored `build/` includes production `foc_ctrl.c` to test its private `ident_sincos` directly, without a new firmware or public test interface:
+
+```sh
+cc -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined -Itests/host/foc/stubs -Isrc -Ilib/foc/include build/align-contract.c src/motor_ident.c src/power_guard.c build/host-align/libfoc.a -lm -o build/align-contract
+build/align-contract
+```
+
+```text
+ident_sincos contract: 3 valid and 8 invalid angles passed
+```
+
+ARM tail and sizes:
+
+```text
+[183/183] Linking C executable zephyr/zephyr.elf
+Memory region         Used Size  Region Size  %age Used
+           FLASH:       70992 B       128 KB     54.16%
+             RAM:       10880 B        32 KB     33.20%
+           SRAM0:           0 B        32 KB      0.00%
+        IDT_LIST:           0 B        32 KB      0.00%
+   text    data     bss     dec     hex
+  70420     564   10320   81304   13d98
+200013f0 00000014 B foc_ctrl_cmd
+```
+
+`text + data = 70984 B`; `data + bss = 10884 B`. Disassembly shows no `sinf/cosf/memset/memcpy/fminf/fmaxf` calls in the identification module or its shared guard/transform/publication path. IDENT's mode-dispatch table selects `0x08003f9e`, which loads angle constants and bypasses normal-mode trig at `0x08003d22` / `0x08003d32`. The angle-transition path also uses constants, including its zero-vector default. Module `vdiv.f32` appears only at `0x08004740` / `0x080047dc` (once-only R fit) and `0x080048b8` / `0x080048e2` / `0x080048ee` (terminal L calculation). Reset and result copy have no calls. Existing normal-mode trig and thread/init memory functions remain outside this identification ISR path.
+
+Format and whitespace checks exit 0 with no diagnostics. Host clang-tidy exits 0 with only suppressed non-user-code warnings. For ARM clang-tidy, `build/align-tidy/compile_commands.json` copies the real ARM database, adds the explicit Clang ARM target, and removes only the five unsupported GCC flags listed in the historical static-analysis section below; build flags and verification policies are unchanged. ARM analysis exits 0 with the existing Zephyr stack macro branch-clone warning and 27 signed-bitwise warnings from Zephyr logging macros (including the added report line), all expanding to `cbprintf_internal.h:542`. These macro diagnostics are retained in the log, not disabled. Real ISR timing and hardware alignment remain unverified.
 
 ## Specification discrepancies and implementation choices
 
 - The required successful `(1 ohm, 1 mH)` test conflicts with the required 0.9 V servo clamp. ALIGN alone needs about 1.15 V with the specified inverter loss at 1 A, and the final R point needs about 1.65 V. Both encoder directions therefore test SERVO_TIMEOUT at 1 s with zero output. The 5 ohm unreachable case also times out. Protection limits were preserved.
 - The L injection begins only after restoring and settling the current to 1 A with the servo. Starting directly from the final 1.5 A R point caused the specified 100 uH plant to exceed the 1.8 A abort threshold on its first positive pulses, as shown by the initial host run. The additional `IDENT_L_BIAS` phase prevents that transient; the frozen injection bias still comes from the recorded 1 A R point.
 - The fit always uses the four nominal targets at or above 0.75 A. Selecting by noisy measured averages could drop the 0.75 A point and conflict with the specified four-point fit. All five measured points remain in the result.
-- Reverse encoder offsets follow `theta_e = (direction * enc * 7 - offset_e) mod 4096`; this reduces to the specified `(enc0 * 7) mod 4096` for positive direction. Both raw TIM3 readings are preserved; wrapping is used only for displacement and offset arithmetic.
+- Reverse encoder offsets follow `theta_e = (direction * enc * 7 - offset_e) mod 4096`; this reduces to `(enc_360 * 7) mod 4096` for positive direction. All three alignment result readings preserve raw TIM3 counts; wrapping is used only for displacement and offset arithmetic.
 - ADC noise is fixed-seed approximately Gaussian noise: the sum of 12 independent uniforms in [-0.5, 0.5], scaled by 0.1 A, then quantized to 16 mA. Its pre-quantization SD is 0.1 A, with tails beyond 3 sigma; the previous single uniform was bounded below the 1.8 A threshold at the 1.5 A target. The plant uses exact exponential RL propagation per period with inverter loss evaluated at the initial current of that period.
 - The referenced `/home/gtc/.pi/agent/references/embedded-development.md` was absent. Repository AGENTS.md and the existing firmware interfaces were inspected instead.
 
-## Consecutive-overcurrent fix verification
+## Historical consecutive-overcurrent fix verification
+
+The following results predate the alignment correction above and describe the old two-angle alignment.
 
 Executed against the revised abort rule and noise model:
 

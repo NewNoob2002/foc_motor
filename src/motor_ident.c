@@ -21,9 +21,11 @@ void motor_ident_start(motor_ident_t* m) {
 
     reset->result.state = IDENT_ALIGN_FIRST;
     reset->result.fail_reason = IDENT_FAIL_NONE;
-    reset->result.enc_90 = 0U;
-    reset->result.enc_0 = 0U;
-    reset->result.delta_mech = 0;
+    reset->result.enc_120 = 0U;
+    reset->result.enc_240 = 0U;
+    reset->result.enc_360 = 0U;
+    reset->result.delta_a = 0;
+    reset->result.delta_b = 0;
     reset->result.direction = 0;
     reset->result.offset_e = 0U;
     for (uint32_t k = 0U; k < IDENT_R_POINTS; k++) {
@@ -36,7 +38,7 @@ void motor_ident_start(motor_ident_t* m) {
     reset->result.r_nonlinear = false;
     reset->result.l = 0.0f;
     reset->result.ipp = 0.0f;
-    reset->theta_e_count = IDENT_ALIGN_90;
+    reset->theta_e_count = 0U;
     reset->run_n = 0U;
     reset->overcurrent_n = 0U;
     reset->target_n = 0U;
@@ -59,9 +61,11 @@ void motor_ident_start(motor_ident_t* m) {
 void motor_ident_result_copy(volatile motor_ident_result_t* dst, const motor_ident_result_t* src) {
     dst->state = src->state;
     dst->fail_reason = src->fail_reason;
-    dst->enc_90 = src->enc_90;
-    dst->enc_0 = src->enc_0;
-    dst->delta_mech = src->delta_mech;
+    dst->enc_120 = src->enc_120;
+    dst->enc_240 = src->enc_240;
+    dst->enc_360 = src->enc_360;
+    dst->delta_a = src->delta_a;
+    dst->delta_b = src->delta_b;
     dst->direction = src->direction;
     dst->offset_e = src->offset_e;
     for (uint32_t k = 0U; k < IDENT_R_POINTS; k++) {
@@ -114,25 +118,39 @@ static void servo(motor_ident_t* m, float i, float ref) {
     }
 }
 
-/** Validate the short mechanical move and compute an offset after direction correction. */
+/** Return the signed shortest mechanical displacement modulo one encoder turn. */
+static int32_t align_delta(uint32_t from, uint32_t to) {
+    int32_t delta = (int32_t)(to % IDENT_COUNTS) - (int32_t)(from % IDENT_COUNTS);
+
+    if (delta > (int32_t)IDENT_COUNTS / 2) {
+        delta -= (int32_t)IDENT_COUNTS;
+    } else if (delta < -(int32_t)IDENT_COUNTS / 2) {
+        delta += (int32_t)IDENT_COUNTS;
+    }
+    return delta;
+}
+
+/** Check two forced positive electrical moves and compute the final zero-angle offset. */
 static void align_result(motor_ident_t* m, uint32_t enc) {
     motor_ident_result_t* r = &m->result;
 
-    r->enc_0 = enc;
-    r->delta_mech = (int32_t)(r->enc_0 % IDENT_COUNTS) - (int32_t)(r->enc_90 % IDENT_COUNTS);
-    if (r->delta_mech > (int32_t)IDENT_COUNTS / 2) {
-        r->delta_mech -= (int32_t)IDENT_COUNTS;
-    } else if (r->delta_mech < -(int32_t)IDENT_COUNTS / 2) {
-        r->delta_mech += (int32_t)IDENT_COUNTS;
-    }
-    float electrical_move = (float)IDENT_POLE_PAIRS * fabsf((float)r->delta_mech);
+    r->enc_360 = enc;
+    r->delta_a = align_delta(r->enc_120, r->enc_240);
+    r->delta_b = align_delta(r->enc_240, r->enc_360);
+    float move_a = (float)IDENT_POLE_PAIRS * fabsf((float)r->delta_a);
+    float move_b = (float)IDENT_POLE_PAIRS * fabsf((float)r->delta_b);
 
-    if (r->delta_mech == 0 || fabsf(electrical_move - (float)IDENT_ALIGN_90) > (float)IDENT_ALIGN_TOL_E) {
+    /* Both ideal moves round to 1365 counts; the first command gap is 1366.
+     * The one-count rounding difference is included in the electrical tolerance.
+     */
+    if (r->delta_a == 0 || r->delta_b == 0 || (r->delta_a > 0) != (r->delta_b > 0)
+        || fabsf(move_a - (float)IDENT_ALIGN_120) > (float)IDENT_ALIGN_TOL_E
+        || fabsf(move_b - (float)IDENT_ALIGN_120) > (float)IDENT_ALIGN_TOL_E) {
         motor_ident_abort(m, IDENT_FAIL_ALIGNMENT);
         return;
     }
-    r->direction = r->delta_mech < 0 ? 1 : -1;
-    uint32_t raw_offset = ((r->enc_0 % IDENT_COUNTS) * IDENT_POLE_PAIRS) % IDENT_COUNTS;
+    r->direction = r->delta_a > 0 ? 1 : -1;
+    uint32_t raw_offset = ((r->enc_360 % IDENT_COUNTS) * IDENT_POLE_PAIRS) % IDENT_COUNTS;
 
     r->offset_e = r->direction > 0 ? raw_offset : (IDENT_COUNTS - raw_offset) % IDENT_COUNTS;
     next_target(m, IDENT_RESISTANCE);
@@ -290,28 +308,51 @@ void motor_ident_step(motor_ident_t* m, const motor_ident_in_t* in, motor_ident_
     }
     switch (m->result.state) {
         case IDENT_ALIGN_FIRST:
+        case IDENT_ALIGN_SECOND:
+        case IDENT_ALIGN_THIRD:
         case IDENT_ALIGN_ZERO:
             servo(m, in->i_d, IDENT_ALIGN_A);
+            if (m->result.state == IDENT_FAILED) {
+                break;
+            }
             if (m->reached && ++m->hold_n >= IDENT_ALIGN_HOLD_N) {
-                if (m->result.state == IDENT_ALIGN_FIRST) {
-                    m->result.enc_90 = in->enc_count;
+                if (m->result.state == IDENT_ALIGN_ZERO) {
+                    align_result(m, in->enc_count);
+                } else {
+                    if (m->result.state == IDENT_ALIGN_SECOND) {
+                        m->result.enc_120 = in->enc_count;
+                    } else if (m->result.state == IDENT_ALIGN_THIRD) {
+                        m->result.enc_240 = in->enc_count;
+                    }
+                    /* The first zero-degree park is deliberately not used for direction.
+                     * With sinusoidal torque and sufficient settling, it leaves the rotor
+                     * near stable 0 or friction-held unstable 180 degrees. The 120 pull
+                     * then moves +120 or -60 to the same stable position. Its unstable
+                     * 300-degree position cannot persist through the preceding zero park
+                     * (|sin(300)| = 0.866). This is not a universal +/-60-degree move;
+                     * finite settling/friction must still be checked on the bench.
+                     */
                     next_target(m, IDENT_ALIGN_DECAY);
                     m->servo_v = 0.0f;
-                } else {
-                    align_result(m, in->enc_count);
                 }
             }
             voltage = m->servo_v;
             break;
         case IDENT_ALIGN_DECAY:
-            /* Remove excitation and verify decay before rotating the vector 90 degrees.
-             * This avoids an abrupt full-current q-axis torque impulse at the switch.
-             */
+            /* Remove excitation and verify decay before each +120-degree switch. */
             servo(m, in->i_d, 0.0f);
             m->servo_v = 0.0f;
-            if (m->reached) {
-                m->theta_e_count = 0U;
-                next_target(m, IDENT_ALIGN_ZERO);
+            if (m->reached && m->result.state != IDENT_FAILED) {
+                if (m->theta_e_count == 0U) {
+                    m->theta_e_count = IDENT_ALIGN_120;
+                    next_target(m, IDENT_ALIGN_SECOND);
+                } else if (m->theta_e_count == IDENT_ALIGN_120) {
+                    m->theta_e_count = IDENT_ALIGN_240;
+                    next_target(m, IDENT_ALIGN_THIRD);
+                } else {
+                    m->theta_e_count = 0U;
+                    next_target(m, IDENT_ALIGN_ZERO);
+                }
             }
             break;
         case IDENT_RESISTANCE:

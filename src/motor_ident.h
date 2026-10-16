@@ -8,7 +8,9 @@
 #define IDENT_PERIOD_S        50e-6f /* s, exactly one PWM period */
 #define IDENT_COUNTS          4096U  /* encoder/electrical counts per revolution */
 #define IDENT_POLE_PAIRS      7U
-#define IDENT_ALIGN_90        1024U  /* electrical counts */
+/* Round k * 4096/3 to the nearest count: 0, 1365, 2731, then 4096 == 0. */
+#define IDENT_ALIGN_120       1365U  /* electrical counts */
+#define IDENT_ALIGN_240       2731U  /* electrical counts */
 #define IDENT_ALIGN_A         1.0f   /* A */
 #define IDENT_ALIGN_HOLD_N    10000U /* PWM periods, 0.5 s after reaching the target */
 #define IDENT_ALIGN_TOL_E     200    /* electrical counts */
@@ -35,13 +37,15 @@
 #define IDENT_REACHED_N       400U    /* PWM periods, 0.02 s continuously within the band */
 #define IDENT_FILTER_K        0.01f   /* dimensionless; tau about 5 ms */
 #define IDENT_ZERO_BAND_A     0.05f   /* A, decay before switching angle */
-#define IDENT_RUN_TIMEOUT_N   200000U /* PWM periods, 10 s absolute run bound */
+#define IDENT_RUN_TIMEOUT_N   360000U /* PWM periods, 18 s; successful phase maxima total <354002 */
 
 /** Identification phases; terminal states remain latched until start. */
 typedef enum {
     IDENT_IDLE = 0,
     IDENT_ALIGN_FIRST,
     IDENT_ALIGN_DECAY,
+    IDENT_ALIGN_SECOND,
+    IDENT_ALIGN_THIRD,
     IDENT_ALIGN_ZERO,
     IDENT_RESISTANCE,
     IDENT_L_BIAS,
@@ -72,11 +76,13 @@ typedef struct {
 typedef struct {
     motor_ident_phase_t state;
     motor_ident_fail_t fail_reason;
-    uint32_t enc_90; /* raw TIM3 counts; wrap handled modulo one mechanical turn */
-    uint32_t enc_0;
-    int32_t delta_mech; /* signed shortest displacement, counts */
-    int32_t direction;  /* +1 or -1 */
-    uint32_t offset_e;  /* theta_e = (direction * enc * 7 - offset_e) mod 4096 */
+    uint32_t enc_120; /* raw TIM3 counts; wrap handled modulo one mechanical turn */
+    uint32_t enc_240;
+    uint32_t enc_360;
+    int32_t delta_a;   /* signed shortest mechanical displacement, 120 -> 240 degrees, counts */
+    int32_t delta_b;   /* signed shortest mechanical displacement, 240 -> 360 degrees, counts */
+    int32_t direction; /* +1 if encoder rises with electrical angle, otherwise -1 */
+    uint32_t offset_e; /* theta_e = (direction * enc * 7 - offset_e) mod 4096 */
     motor_ident_point_t points[IDENT_R_POINTS];
     float r;            /* ohm */
     float v0;           /* V, fitted inverter loss */
@@ -121,7 +127,7 @@ typedef struct {
     float sum_delta;
 } motor_ident_t;
 
-/** Reset all results and begin the 90-degree alignment at zero voltage. */
+/** Reset all results and begin the 0, 120, 240, 360-degree alignment at zero voltage. */
 void motor_ident_start(motor_ident_t* ident);
 
 /**
