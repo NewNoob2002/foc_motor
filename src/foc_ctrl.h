@@ -63,7 +63,8 @@
  * 12-17 V trips (latched until reset).
  *
  * foc_ctrl_cmd is the command block for the debugger (the console UART
- * has no RX wire); the ISR reads it every period.
+ * has no RX wire); the ISR reads its control fields every period. The test-only
+ * crash field is consumed only by the report thread.
  */
 
 #ifndef FOC_MOTOR_FOC_CTRL_H
@@ -72,6 +73,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "cog_map.h"
 #include "foc_speed.h"
 #include "motor_ident.h"
 #include "pwm_adc.h"
@@ -110,6 +112,7 @@ typedef enum {
     FOC_MODE_IDENT = 5,
     FOC_MODE_OPENLOOP = 6,
     FOC_MODE_SPEED = 7,
+    FOC_MODE_MAP = 8, /* Powered gain sweep, then bidirectional 10 rpm torque map. */
 } foc_mode_t;
 
 typedef struct {
@@ -124,6 +127,8 @@ typedef struct {
     uint32_t dtc;      /* +32: 0 off, 1 on; latched with refs on step_seq change */
     int32_t spd_rpm;   /* +36: signed calibrated-frame rpm, clamped to +/-200 */
     uint32_t spd_step; /* +40: 1 = kind-2 step capture, 0 = ordinary ramp; latched with sequence */
+    uint32_t cff;      /* +44: 0 off, 1 on; latched on step_seq, refused without a valid boot map */
+    uint32_t crash;    /* +48: test-only; 0x43524153 ("CRAS") is cleared by the report thread, then k_oops() */
 } foc_ctrl_cmd_t;
 
 extern volatile foc_ctrl_cmd_t foc_ctrl_cmd;
@@ -142,6 +147,11 @@ typedef struct {
     float ic_offset;
     uint16_t ia_spread; /* max - min ADC codes during calibration */
     uint16_t ic_spread;
+    bool cff;
+    bool cff_refused;
+    bool ff_valid;
+    cog_phase_t map_phase;
+    cog_fail_t map_reason;
     bool dtc;                  /* latched and accepted compensation request */
     bool dtc_refused;          /* latched request rejected by V0 plausibility */
     bool calib_valid;          /* successful angle identification in this boot; cleared on new IDENT */
@@ -187,6 +197,8 @@ typedef struct {
     uint32_t theta_e; /* step angle, electrical counts */
     float vbus;       /* V, at the start */
     bool power_on;    /* power stage on during the whole capture */
+    bool cff;
+    bool cff_refused;
     bool dtc;         /* accepted state for the new references at top PRE */
     bool dtc_refused; /* V0 was outside the strict (0.05, 0.6) V window */
     /* Kind 1: id/iq in mA; kind 2: speed in deci-rpm / iq reference in mA. */
@@ -220,5 +232,17 @@ const foc_ctrl_ident_t* foc_ctrl_ident_get(void);
 
 /** Return the finished identification buffer to the ISR after reporting it. */
 void foc_ctrl_ident_release(void);
+
+/** Publish any active map as failed; called by the BSP fault callback in ISR context. */
+void foc_ctrl_fault(void);
+
+/** Acquire the immutable terminal map; NULL while the ISR owns the raw buffer. */
+const cog_raw_t* foc_ctrl_map_get(void);
+/** Publish the processed table while holding the terminal raw buffer, then release it.
+ * The thread copies only while ff_valid=0. Starting a new map is deferred while
+ * ready=1; publication precedes ready release, so an ISR restart cannot race a
+ * table write. A new map or identification invalidates the table in the ISR.
+ */
+void foc_ctrl_map_release(const int16_t* table);
 
 #endif /* FOC_MOTOR_FOC_CTRL_H */

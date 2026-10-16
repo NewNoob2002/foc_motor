@@ -59,7 +59,8 @@ BUILD_ASSERT(offsetof(foc_ctrl_cmd_t, arm) == 0U && offsetof(foc_ctrl_cmd_t, mod
                  && offsetof(foc_ctrl_cmd_t, step_seq) == 16U && offsetof(foc_ctrl_cmd_t, rate_e) == 20U
                  && offsetof(foc_ctrl_cmd_t, id_ma) == 24U && offsetof(foc_ctrl_cmd_t, iq_ma) == 28U
                  && offsetof(foc_ctrl_cmd_t, dtc) == 32U && offsetof(foc_ctrl_cmd_t, spd_rpm) == 36U
-                 && offsetof(foc_ctrl_cmd_t, spd_step) == 40U,
+                 && offsetof(foc_ctrl_cmd_t, spd_step) == 40U && offsetof(foc_ctrl_cmd_t, cff) == 44U
+                 && offsetof(foc_ctrl_cmd_t, crash) == 48U,
              "debugger command layout changed");
 
 volatile foc_ctrl_cmd_t foc_ctrl_cmd;
@@ -93,6 +94,9 @@ typedef struct {
     float calib_r;
     float calib_l;
     float calib_v0;
+    float calib_v_gc;
+    bool cff;
+    bool cff_refused;
     bool dtc;
     bool dtc_refused;
     float calib_kp;
@@ -130,6 +134,13 @@ static atomic_t cap_state;
 /* The ISR writes only while ready is zero; the report thread releases ownership. */
 static foc_ctrl_ident_t ident_result;
 static atomic_t ident_ready;
+static cog_map_t map;
+static int16_t ff_table[FOC_CTRL_MAP_BINS];
+/* 0: writable by terminal-map owner, 1: immutable/valid, 2: invalidated.
+ * CAS 0->1 prevents a thread interrupted by a new IDENT from publishing a
+ * stale map. New MAP starts only after raw-buffer release, then sets 0.
+ */
+static atomic_t ff_valid;
 
 /** Publish a terminal result once, waiting for release of any older result. */
 static void ident_publish(void) {
@@ -145,7 +156,8 @@ static void ident_publish(void) {
 }
 
 /** Reset PI state and choose precomputed identified gains only for the powered loop. */
-static void pi_reset(bool powered) {
+/* Mode entry and power-state changes only: flash (.text.ctrl_once). */
+static void __attribute__((noinline, section(".text.ctrl_once"))) pi_reset(bool powered) {
     float kp = powered && st.calib_valid ? st.calib_kp : CURRENT_KP;
     float ki = powered && st.calib_valid ? st.calib_ki : CURRENT_KI;
 
@@ -169,6 +181,8 @@ void foc_ctrl_init(void) {
     snap = (foc_ctrl_snapshot_t){.duty_a = 0.5f, .duty_b = 0.5f, .duty_c = 0.5f};
     (void)atomic_set(&cap_state, CAPTURE_IDLE);
     (void)atomic_set(&ident_ready, 0);
+    map = (cog_map_t){0};
+    (void)atomic_set(&ff_valid, 2);
 }
 
 /* Electrical angle in counts: mechanical position times the pole pairs, modulo one turn. */
@@ -209,7 +223,7 @@ static int16_t to_ma(float amps) {
 
 /* Commanded mode, or FOC_MODE_IDLE if it is unknown or not allowed with the power stage on. */
 static foc_mode_t mode_allowed(uint32_t m, bool power, bool* refused) {
-    bool known = m <= (uint32_t)FOC_MODE_SPEED;
+    bool known = m <= (uint32_t)FOC_MODE_MAP;
     bool current_ok =
         st.calib_valid && st.calib_r > 0.02f && st.calib_r < 2.0f && st.calib_l > 10e-6f && st.calib_l < 5e-3f;
     bool forbidden = m == (uint32_t)FOC_MODE_VOLTAGE
@@ -242,6 +256,8 @@ static float step_capture(float ia, float ic, float vbus, bool power, float v_cm
         cap.kind = 0U;
         cap.dtc = false;
         cap.dtc_refused = false;
+        cap.cff = false;
+        cap.cff_refused = false;
         cap.v_mv = (uint32_t)(st.step_v * 1000.0f + 0.5f);
         cap.theta_e = st.step_theta;
         cap.vbus = vbus;
@@ -285,6 +301,8 @@ static void current_capture_prepare(float vbus, bool power) {
         bool plausible = st.calib_valid && st.calib_v0 > 0.05f && st.calib_v0 < 0.6f;
         cap.dtc = requested && plausible;
         cap.dtc_refused = requested && !plausible;
+        cap.cff = foc_ctrl_cmd.cff == 1U && atomic_get(&ff_valid) == 1;
+        cap.cff_refused = foc_ctrl_cmd.cff == 1U && !cap.cff;
         cap.vbus = vbus;
         cap.power_on = power;
         (void)atomic_set(&cap_state, CAPTURE_RUNNING);
@@ -297,6 +315,8 @@ static void current_capture_prepare(float vbus, bool power) {
         st.iq_ref_ma = cap.new_iq_ma;
         st.dtc = cap.dtc;
         st.dtc_refused = cap.dtc_refused;
+        st.cff = cap.cff;
+        st.cff_refused = cap.cff_refused;
     }
 }
 
@@ -314,12 +334,8 @@ static void current_capture_sample(foc_dq_t measured, bool power) {
     }
 }
 
-/** Latch a speed command while respecting capture-buffer ownership. */
-static void speed_prepare(float vbus, bool power) {
-    uint32_t seq = foc_ctrl_cmd.step_seq;
-    if (seq == st.step_seen || atomic_get(&cap_state) != CAPTURE_IDLE) {
-        return;
-    }
+/** Latch one command in flash only when its sequence changes and the buffer is free. */
+static void __attribute__((noinline, section(".text.ctrl_once"))) speed_latch(float vbus, bool power, uint32_t seq) {
     bool step = foc_ctrl_cmd.spd_step == 1U;
     st.step_seen = seq;
     int32_t target = foc_ctrl_cmd.spd_rpm;
@@ -334,14 +350,26 @@ static void speed_prepare(float vbus, bool power) {
         cap.new_spd_rpm = target;
         cap.dtc = requested && plausible;
         cap.dtc_refused = requested && !plausible;
+        cap.cff = foc_ctrl_cmd.cff == 1U && atomic_get(&ff_valid) == 1;
+        cap.cff_refused = foc_ctrl_cmd.cff == 1U && !cap.cff;
         cap.vbus = vbus;
         cap.power_on = power;
         (void)atomic_set(&cap_state, CAPTURE_RUNNING);
     } else {
         st.dtc = requested && plausible;
         st.dtc_refused = requested && !plausible;
+        st.cff = foc_ctrl_cmd.cff == 1U && atomic_get(&ff_valid) == 1;
+        st.cff_refused = foc_ctrl_cmd.cff == 1U && !st.cff;
     }
     st.spd_target = target;
+}
+
+/** Check command readiness in CCM without entering flash on ordinary periods. */
+static void speed_prepare(float vbus, bool power) {
+    uint32_t seq = foc_ctrl_cmd.step_seq;
+    if (seq != st.step_seen && atomic_get(&cap_state) == CAPTURE_IDLE) {
+        speed_latch(vbus, power, seq);
+    }
 }
 
 /** Update PI and capture at 1 kHz, applying the captured step at sample PRE. */
@@ -356,6 +384,8 @@ static void speed_update(void) {
     if (step) {
         st.dtc = cap.dtc;
         st.dtc_refused = cap.dtc_refused;
+        st.cff = cap.cff;
+        st.cff_refused = cap.cff_refused;
     }
     foc_speed_loop_update(&st.speed_loop, target, st.rpm, step);
     if (capturing) {
@@ -368,7 +398,8 @@ static void speed_update(void) {
     }
 }
 
-static void calibrate(const pwm_adc_sample_t* sample) {
+/* First 4096 periods after boot only, power stage off: flash (.text.ctrl_once). */
+static void __attribute__((noinline, section(".text.ctrl_once"))) calibrate(const pwm_adc_sample_t* sample) {
     st.ia_sum += sample->ia_code;
     st.ic_sum += sample->ic_code;
     st.ia_min = MIN(st.ia_min, sample->ia_code);
@@ -387,6 +418,59 @@ static void calibrate(const pwm_adc_sample_t* sample) {
     }
 }
 
+/*
+ * Mode-change bookkeeping, once per mode change. It lives in flash
+ * (.text.ctrl_once, excluded from the CCM relocation in CMakeLists.txt) to keep
+ * CCM for the per-period path; the one-off flash fetch costs a few hundred
+ * cycles in the period of the change only.
+ */
+static void __attribute__((noinline, section(".text.ctrl_once")))
+mode_enter(foc_mode_t mode, const pwm_adc_sample_t* sample, bool powered, bool calibrated) {
+    if (st.mode == FOC_MODE_MAP) {
+        cog_map_abort(&map, COG_CANCELLED);
+    }
+    if (st.mode == FOC_MODE_IDENT) {
+        motor_ident_abort(&st.ident, IDENT_FAIL_CANCELLED);
+        ident_publish();
+    }
+    if (mode == FOC_MODE_IDENT) {
+        motor_ident_start(&st.ident);
+        st.ident_published = false;
+        st.calib_valid = false;
+        (void)atomic_set(&ff_valid, 2);
+    }
+    if (mode == FOC_MODE_MAP && cog_map_get(&map) == NULL) {
+        (void)atomic_set(&ff_valid, 0);
+        bool plausible = calibrated && st.calib_valid && st.calib_r > 0.02f && st.calib_r < 2.0f && st.calib_l > 10e-6f
+                         && st.calib_l < 5e-3f && st.calib_v0 > 0.05f && st.calib_v0 < 0.6f;
+        (void)cog_map_start(&map, sample->power_on, plausible, st.calib_v_gc, st.calib_direction, sample->enc_count);
+    }
+    st.mode = mode;
+    st.dc_v = 0.0f;
+    if (mode == FOC_MODE_OPENLOOP) {
+        st.ol_phase = (foc_ctrl_cmd.theta_e % ENCODER_COUNTS_PER_REV) << 16U;
+        st.ol_remainder = 0;
+    }
+    if (mode == FOC_MODE_CURRENT || mode == FOC_MODE_SPEED || mode == FOC_MODE_MAP) {
+        st.cff = false;
+        st.cff_refused = false;
+        st.id_ref_ma = 0;
+        st.iq_ref_ma = 0;
+        st.dtc = false;
+        st.dtc_refused = false;
+        st.current_powered = powered;
+        st.step_seen = foc_ctrl_cmd.step_seq;
+        foc_ctrl_speed_reset(&st.speed, sample->enc_count);
+        foc_speed_loop_reset(&st.speed_loop);
+        st.spd_target = 0;
+        st.rpm = 0.0f;
+    }
+    pi_reset(powered);
+    if (atomic_get(&cap_state) == CAPTURE_RUNNING) {
+        (void)atomic_set(&cap_state, CAPTURE_IDLE);
+    }
+}
+
 void foc_ctrl_step(const pwm_adc_sample_t* sample, pwm_adc_cmd_t* cmd) {
     bool calibrated = st.cal_n >= FOC_CTRL_CAL_SAMPLES && !st.cal_failed;
 
@@ -401,7 +485,9 @@ void foc_ctrl_step(const pwm_adc_sample_t* sample, pwm_adc_cmd_t* cmd) {
     bool refused = false;
     /* Powered: on now, or switched on by the guard in the previous step (the BSP acts on it this period). */
     bool powered = sample->power_on || st.guard.request;
-    foc_mode_t mode = calibrated ? mode_allowed(foc_ctrl_cmd.mode, powered, &refused) : FOC_MODE_IDLE;
+    foc_mode_t mode = foc_ctrl_cmd.mode == FOC_MODE_MAP ? FOC_MODE_MAP
+                      : calibrated                      ? mode_allowed(foc_ctrl_cmd.mode, powered, &refused)
+                                                        : FOC_MODE_IDLE;
 
     st.vbus_f += (vbus - st.vbus_f) * LPF_K;
     if (calibrated) {
@@ -413,37 +499,7 @@ void foc_ctrl_step(const pwm_adc_sample_t* sample, pwm_adc_cmd_t* cmd) {
     bool entered = mode != st.mode;
 
     if (entered) {
-        if (st.mode == FOC_MODE_IDENT) {
-            motor_ident_abort(&st.ident, IDENT_FAIL_CANCELLED);
-            ident_publish();
-        }
-        if (mode == FOC_MODE_IDENT) {
-            motor_ident_start(&st.ident);
-            st.ident_published = false;
-            st.calib_valid = false;
-        }
-        st.mode = mode;
-        st.dc_v = 0.0f;
-        if (mode == FOC_MODE_OPENLOOP) {
-            st.ol_phase = (foc_ctrl_cmd.theta_e % ENCODER_COUNTS_PER_REV) << 16U;
-            st.ol_remainder = 0;
-        }
-        if (mode == FOC_MODE_CURRENT || mode == FOC_MODE_SPEED) {
-            st.id_ref_ma = 0;
-            st.iq_ref_ma = 0;
-            st.dtc = false;
-            st.dtc_refused = false;
-            st.current_powered = powered;
-            st.step_seen = foc_ctrl_cmd.step_seq;
-            foc_ctrl_speed_reset(&st.speed, sample->enc_count);
-            foc_speed_loop_reset(&st.speed_loop);
-            st.spd_target = 0;
-            st.rpm = 0.0f;
-        }
-        pi_reset(powered);
-        if (atomic_get(&cap_state) == CAPTURE_RUNNING) {
-            (void)atomic_set(&cap_state, CAPTURE_IDLE);
-        }
+        mode_enter(mode, sample, powered, calibrated);
     }
 
     power_guard_in_t gin;
@@ -507,9 +563,14 @@ void foc_ctrl_step(const pwm_adc_sample_t* sample, pwm_adc_cmd_t* cmd) {
             e_count = theta_e_count(sample->enc_count);
             out.v_dq.d = VOLTAGE_MODE_VD_V;
             break;
+        case FOC_MODE_MAP:
+            e_count = cog_map_current(&map) ? theta_meas_count(sample->enc_count) : cog_map_angle(&map);
+            __attribute__((fallthrough));
         case FOC_MODE_SPEED:
         case FOC_MODE_CURRENT:
-            e_count = powered ? theta_meas_count(sample->enc_count) : theta_e_count(sample->enc_count);
+            if (mode != FOC_MODE_MAP) {
+                e_count = powered ? theta_meas_count(sample->enc_count) : theta_e_count(sample->enc_count);
+            }
             if (!entered) {
                 speed_tick = foc_ctrl_speed_step(&st.speed, sample->enc_count);
                 if (speed_tick) {
@@ -526,9 +587,33 @@ void foc_ctrl_step(const pwm_adc_sample_t* sample, pwm_adc_cmd_t* cmd) {
 
     foc_sincos_t sc;
 
+    bool mapping_current = false;
+    if (mode == FOC_MODE_MAP && cog_map_get(&map) == NULL) {
+        foc_ab_t ab = foc_clarke(i_abc);
+        cog_map_in_t in;
+        in.enc = sample->enc_count;
+        in.alpha = ab.alpha;
+        in.beta = ab.beta;
+        in.rpm = st.rpm;
+        in.power = sample->power_on && gout.power_on;
+        in.armed = gin.arm_key;
+        in.fault = gout.trip != 0U;
+        cog_map_step(&map, &in);
+        mapping_current = cog_map_current(&map);
+        if (mapping_current) {
+            /* Phase B: the map's position loop sets iq; current loop at the calibrated angle, DTC on. */
+            e_count = theta_meas_count(sample->enc_count);
+            st.dtc = true;
+        } else {
+            e_count = cog_map_angle(&map);
+            out.v_dq.d = map.voltage;
+        }
+    }
     sincos_e_count(e_count, &sc.sin_theta, &sc.cos_theta);
-
-    if (mode == FOC_MODE_CURRENT || mode == FOC_MODE_SPEED) {
+    float iq_total = mode == FOC_MODE_SPEED ? st.speed_loop.iq
+                     : mapping_current      ? map.iq_cmd
+                                            : (float)st.iq_ref_ma * 0.001f;
+    if (mode == FOC_MODE_CURRENT || mode == FOC_MODE_SPEED || mapping_current) {
         if (st.current_powered != powered) {
             pi_reset(powered);
             st.current_powered = powered;
@@ -541,13 +626,20 @@ void foc_ctrl_step(const pwm_adc_sample_t* sample, pwm_adc_cmd_t* cmd) {
             if (speed_tick) {
                 speed_update();
             }
-        } else {
+        } else if (mode == FOC_MODE_CURRENT) {
             current_capture_prepare(vbus, sample->power_on);
         }
         foc_dq_t i_ref;
 
         i_ref.d = (float)st.id_ref_ma * 0.001f;
-        i_ref.q = mode == FOC_MODE_SPEED ? st.speed_loop.iq : (float)st.iq_ref_ma * 0.001f;
+        /* Evaluated after speed_update()/current_capture_prepare(), which update these references. */
+        i_ref.q = mode == FOC_MODE_SPEED ? st.speed_loop.iq
+                  : mapping_current      ? map.iq_cmd
+                                         : (float)st.iq_ref_ma * 0.001f;
+        /* Phase B uses the map's own iq limit (above the mode 4/7 limit, see cog_map.h). */
+        i_ref.q = cog_ff_apply(i_ref.q, mapping_current ? COG_POS_I_MAX : FOC_CTRL_IQ_MAX_A, st.cff && !mapping_current,
+                               atomic_get(&ff_valid) == 1, ff_table, sample->enc_count);
+        iq_total = i_ref.q;
         if (!sample->power_on || !gout.power_on) {
             foc_pi_reset(&st.cc.pi_d);
             foc_pi_reset(&st.cc.pi_q);
@@ -590,6 +682,7 @@ void foc_ctrl_step(const pwm_adc_sample_t* sample, pwm_adc_cmd_t* cmd) {
                 st.calib_r = st.ident.result.r;
                 st.calib_l = st.ident.result.l;
                 st.calib_v0 = st.ident.result.v0;
+                st.calib_v_gc = st.ident.result.points[IDENT_R_BIAS_POINT].v;
                 st.calib_kp = st.calib_l * CURRENT_WC;
                 st.calib_ki = st.calib_r * CURRENT_WC;
                 st.calib_valid = true;
@@ -612,7 +705,7 @@ void foc_ctrl_step(const pwm_adc_sample_t* sample, pwm_adc_cmd_t* cmd) {
     cmd->power_on = gout.power_on;
     cmd->trip = ((gout.trip & POWER_GUARD_TRIP_OVERCURRENT) != 0U ? PWM_ADC_FAULT_OVERCURRENT : 0U)
                 | ((gout.trip & POWER_GUARD_TRIP_VBUS) != 0U ? PWM_ADC_FAULT_VBUS : 0U);
-    if (powered && (mode == FOC_MODE_CURRENT || mode == FOC_MODE_SPEED)
+    if (powered && (mode == FOC_MODE_CURRENT || mode == FOC_MODE_SPEED || mapping_current)
         && (st.speed.trip_counts > FOC_CTRL_OVERSPEED_COUNTS || st.speed.trip_counts < -FOC_CTRL_OVERSPEED_COUNTS)) {
         cmd->trip |= PWM_ADC_FAULT_OVERSPEED;
     }
@@ -634,6 +727,11 @@ void foc_ctrl_step(const pwm_adc_sample_t* sample, pwm_adc_cmd_t* cmd) {
     snap.ic_offset = st.ic_offset;
     snap.ia_spread = st.ia_max - st.ia_min;
     snap.ic_spread = st.ic_max - st.ic_min;
+    snap.cff = st.cff && atomic_get(&ff_valid) == 1;
+    snap.cff_refused = st.cff_refused;
+    snap.ff_valid = atomic_get(&ff_valid) == 1;
+    snap.map_phase = map.raw.phase;
+    snap.map_reason = map.raw.reason;
     snap.dtc = st.dtc;
     snap.dtc_refused = st.dtc_refused;
     snap.calib_valid = st.calib_valid;
@@ -648,10 +746,10 @@ void foc_ctrl_step(const pwm_adc_sample_t* sample, pwm_adc_cmd_t* cmd) {
     snap.ib_f = st.ib_f;
     snap.ic_f = st.ic_f;
     snap.i_d_ref = (float)st.id_ref_ma * 0.001f;
-    snap.i_q_ref = mode == FOC_MODE_SPEED ? st.speed_loop.iq : (float)st.iq_ref_ma * 0.001f;
+    snap.i_q_ref = iq_total;
     snap.cc_kp = st.cc.pi_d.kp;
     snap.cc_ki = st.cc.pi_d.ki;
-    snap.speed_counts = (mode == FOC_MODE_CURRENT || mode == FOC_MODE_SPEED) ? st.speed.counts : 0;
+    snap.speed_counts = (mode == FOC_MODE_CURRENT || mode == FOC_MODE_SPEED || mapping_current) ? st.speed.counts : 0;
     snap.speed_rpm = st.rpm;
     snap.spd_ref_rpm = st.speed_loop.ref;
     snap.spd_target_rpm = st.spd_target;
@@ -691,4 +789,28 @@ const foc_ctrl_ident_t* foc_ctrl_ident_get(void) {
 /** Release result ownership so a later run can publish its measurements. */
 void foc_ctrl_ident_release(void) {
     (void)atomic_cas(&ident_ready, 1, 0);
+}
+
+/** Acquire the sequencer's immutable terminal buffer in report-thread context. */
+const cog_raw_t* foc_ctrl_map_get(void) {
+    return cog_map_get(&map);
+}
+
+/** Copy before atomic publication; invalidation wins over an interrupted publisher. */
+void foc_ctrl_map_release(const int16_t* table) {
+    if (cog_map_get(&map) == NULL) {
+        return;
+    }
+    if (table != NULL && atomic_get(&ff_valid) == 0 && map.raw.phase == COG_DONE) {
+        for (uint32_t b = 0U; b < FOC_CTRL_MAP_BINS; b++) {
+            ff_table[b] = table[b];
+        }
+        (void)atomic_cas(&ff_valid, 0, 1);
+    }
+    cog_map_release(&map);
+}
+
+/** Publish a map abort when the BSP stops calling the control step after a fault. */
+void foc_ctrl_fault(void) {
+    cog_map_abort(&map, COG_FAULT);
 }

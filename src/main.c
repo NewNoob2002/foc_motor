@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 
+#include "cog_proc.h"
 #include "encoder.h"
 #include "foc_bench.h"
 #include "foc_ctrl.h"
@@ -9,8 +10,10 @@
 #include <zephyr/devicetree.h>
 #include <zephyr/devicetree/dma.h>
 #include <zephyr/devicetree/gpio.h>
+#include <zephyr/fatal.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/logging/log_ctrl.h>
 #include <zephyr/sys/util.h>
 
 LOG_MODULE_REGISTER(foc_motor, LOG_LEVEL_INF);
@@ -50,11 +53,41 @@ BUILD_ASSERT(DT_DMAS_CELL_BY_NAME(DT_NODELABEL(usart3), tx, slot) == 29, "USART3
  * statically allocated thread, which also runs the Stage 5 FOC bench first.
  * Lower priority than the log thread (6).
  */
-#define REPORT_STACK_SIZE 1024
+#define REPORT_STACK_SIZE 2048
 #define REPORT_PRIORITY   7
 
 K_THREAD_STACK_DEFINE(report_stack, REPORT_STACK_SIZE);
 static struct k_thread report_thread;
+
+/**
+ * Shut down before application fatal logging, then retain Zephyr's halt policy.
+ *
+ * In v4.4.2, z_arm_fault() classifies and prints the hardware fault before
+ * z_arm_fatal_error() dumps the exception frame. z_fatal_error() then logs
+ * the reason/current thread and invokes coredump() before calling this hook.
+ * CONFIG_EXCEPTION_DUMP_HOOK with arch_exception_set_dump_hook() could run
+ * earlier, before each exception diagnostic; that optional output hook is not
+ * installed here. Latency through the preceding diagnostics is not bounded.
+ */
+void k_sys_fatal_error_handler(unsigned int reason, const struct arch_esf* esf) {
+    pwm_adc_fatal_off();
+    ARG_UNUSED(esf);
+    LOG_PANIC();
+    LOG_ERR("fatal: power stage off (reason %u)", reason);
+    k_fatal_halt(reason);
+}
+
+/** Log the report thread's minimum unused stack so far, outside the large dump frames. */
+static __noinline void report_stack_space(const char* context) {
+    size_t unused;
+    int ret = k_thread_stack_space_get(&report_thread, &unused);
+
+    if (ret == 0) {
+        LOG_INF("report stack unused %u B (%s)", (unsigned int)unused, context);
+    } else {
+        LOG_WRN("report stack measurement failed: %d (%s)", ret, context);
+    }
+}
 
 /* One capture line is about 60 characters, 0.7 ms at 921600 baud; the pause keeps the 1 KiB log buffer from dropping. */
 #define CAPTURE_LINE_PAUSE_MS 2
@@ -75,6 +108,7 @@ static const char* const mode_names[] = {
     [FOC_MODE_CURRENT] = "current loop (calibrated dq)",
     [FOC_MODE_IDENT] = "ident",
     [FOC_MODE_OPENLOOP] = "openloop (rotating vector, ramped)",
+    [FOC_MODE_MAP] = "cogging map",
     [FOC_MODE_SPEED] = "speed loop (calibrated dq)",
 };
 
@@ -129,6 +163,9 @@ static __noinline void report(uint32_t n, const pwm_adc_stats_t* st, bool timing
             milli(fc->ia_offset) / 1000, milli(fc->ia_offset) % 1000, milli(fc->ic_offset) / 1000,
             milli(fc->ic_offset) % 1000);
     LOG_INF("  dtc %s%s", fc->dtc ? "on" : "off", fc->dtc_refused ? " (refused: V0 outside 50..600 mV)" : "");
+    LOG_INF("  cff %s%s, ff_valid %u; map phase %u reason %u", fc->cff ? "on" : "off",
+            fc->cff_refused ? " (refused: no valid map)" : "", fc->ff_valid ? 1U : 0U, (unsigned int)fc->map_phase,
+            (unsigned int)fc->map_reason);
     LOG_INF("  ident phase %u", (unsigned int)fc->ident_phase);
     LOG_INF("  i_d %d mA, i_q %d mA, v_d %d mV, v_q %d mV, limited %d", milli(fc->i_d), milli(fc->i_q), milli(fc->v_d),
             milli(fc->v_q), fc->limited ? 1 : 0);
@@ -174,16 +211,18 @@ static __noinline void report_speed(foc_ctrl_snapshot_t* fc) {
 static __noinline void dump_capture(const foc_ctrl_capture_t* c, foc_ctrl_snapshot_t* fc) {
     if (c->kind == 2U) {
         LOG_INF("cap_begin seq %u, kind 2, refs %d -> %d rpm, VBUS %d mV, power %s, %u samples at 1 kHz, "
-                "step at %u, dtc %s%s",
+                "step at %u, dtc %s%s, cff %s%s",
                 c->seq, c->old_spd_rpm, c->new_spd_rpm, milli(c->vbus), c->power_on ? "on" : "OFF",
                 FOC_CTRL_CAPTURE_LEN, FOC_CTRL_CAPTURE_PRE, c->dtc ? "on" : "off",
-                c->dtc_refused ? " (refused: implausible V0)" : "");
+                c->dtc_refused ? " (refused: implausible V0)" : "", c->cff ? "on" : "off",
+                c->cff_refused ? " (refused: no valid map)" : "");
     } else if (c->kind == 1U) {
         LOG_INF("cap_begin seq %u, kind 1, refs id %d -> %d iq %d -> %d mA, VBUS %d mV, power %s, %u samples, "
-                "step at %u, dtc %s%s",
+                "step at %u, dtc %s%s, cff %s%s",
                 c->seq, c->old_id_ma, c->new_id_ma, c->old_iq_ma, c->new_iq_ma, milli(c->vbus),
                 c->power_on ? "on" : "OFF", FOC_CTRL_CAPTURE_LEN, FOC_CTRL_CAPTURE_PRE, c->dtc ? "on" : "off",
-                c->dtc_refused ? " (refused: implausible V0)" : "");
+                c->dtc_refused ? " (refused: implausible V0)" : "", c->cff ? "on" : "off",
+                c->cff_refused ? " (refused: no valid map)" : "");
     } else {
         LOG_INF("cap_begin seq %u, step %u mV at theta_e %u, VBUS %d mV, power %s, %u samples (%u zero, %u on)", c->seq,
                 c->v_mv, c->theta_e, milli(c->vbus), c->power_on ? "on" : "OFF", FOC_CTRL_CAPTURE_LEN,
@@ -238,6 +277,42 @@ static __noinline void dump_ident(const foc_ctrl_ident_t* r) {
     foc_ctrl_ident_release();
 }
 
+/** Process and report a terminal map before returning ownership to the ISR. */
+static __noinline void dump_map(const cog_raw_t* raw, foc_ctrl_snapshot_t* fc) {
+    static cog_processed_t result;
+    bool ok = cog_process(raw, &result);
+    LOG_INF("cogmap_result phase %u reason %u", (unsigned int)raw->phase, (unsigned int)raw->reason);
+    for (uint32_t k = 0U; k < COG_GAIN_POINTS; k++) {
+        float a = raw->gain[k].alpha_ma;
+        float beta = raw->gain[k].beta_ma;
+        LOG_INF("gainchk %u %u %d %d %d %d %d", k, k * 4096U / COG_GAIN_POINTS, ident_units(a, 1.0f),
+                ident_units((-a + 1.7320508f * beta) * 0.5f, 1.0f), ident_units((-a - 1.7320508f * beta) * 0.5f, 1.0f),
+                ident_units(result.magnitude_ma[k], 1.0f), ident_units(result.angle_error[k], 1.0f));
+        k_msleep(CAPTURE_LINE_PAUSE_MS);
+        report_speed(fc);
+    }
+    LOG_INF("gainfit I0 %d e1 %d p1 %d e2 %d p2 %d", ident_units(result.i0_ma, 1.0f),
+            ident_units(result.e1_permille, 1.0f), ident_units(result.p1_counts, 1.0f),
+            ident_units(result.e2_permille, 1.0f), ident_units(result.p2_counts, 1.0f));
+    if (ok) {
+        for (uint32_t b = 0U; b < FOC_CTRL_MAP_BINS; b++) {
+            LOG_INF("cogmap %u %d %d %d", b, (int32_t)cog_bin_mean(raw, 0U, b), (int32_t)cog_bin_mean(raw, 1U, b),
+                    result.ff[b]);
+            k_msleep(CAPTURE_LINE_PAUSE_MS);
+            report_speed(fc);
+        }
+        for (uint32_t h = 0U; h < COG_HARMONICS; h++) {
+            LOG_INF("cogharm %u %d %d", cog_orders[h], (int32_t)result.harmonic[h].amplitude_ma,
+                    (int32_t)result.harmonic[h].phase_counts);
+            k_msleep(CAPTURE_LINE_PAUSE_MS);
+        }
+        LOG_INF("friction %d", (int32_t)result.friction_ma);
+        LOG_INF("gain e2 includes phase resistance imbalance; order 84 is near the 256-bin resolution limit");
+    }
+    LOG_INF("cogmap_ok %u", ok ? 1U : 0U);
+    foc_ctrl_map_release(ok ? result.ff : NULL);
+}
+
 /* Mechanical count, electrical angle (0..4095) and the three duties of one ISR step. */
 static __noinline void report_rot(const foc_ctrl_snapshot_t* fc) {
     LOG_INF("rot %u %u %u %u %u %u", fc->steps, fc->enc_count % ENCODER_COUNTS_PER_REV, fc->theta_e_count,
@@ -268,7 +343,7 @@ static void report_loop(void* p1, void* p2, void* p3) {
     foc_bench_run();
 
     foc_ctrl_init();
-    int ret = pwm_adc_init(foc_ctrl_step);
+    int ret = pwm_adc_init(foc_ctrl_step, foc_ctrl_fault);
 
     if (ret < 0) {
         LOG_ERR("pwm_adc_init failed: %d", ret);
@@ -279,7 +354,7 @@ static void report_loop(void* p1, void* p2, void* p3) {
             "offset calibration %u periods; power stage off",
             PWM_ARR, FOC_CTRL_CAL_SAMPLES);
     LOG_INF("command block foc_ctrl_cmd at %p: arm +0, mode +4, v_mv +8, theta_e +12, step_seq +16, rate_e +20; "
-            "id_ma +24, iq_ma +28, dtc +32, spd_rpm +36, spd_step +40; arm key 0x%08x",
+            "id_ma +24, iq_ma +28, dtc +32, spd_rpm +36, spd_step +40, cff +44, crash +48; arm key 0x%08x",
             (void*)&foc_ctrl_cmd, FOC_CTRL_ARM_KEY);
 
     /* Drop the start-up window. */
@@ -289,6 +364,11 @@ static void report_loop(void* p1, void* p2, void* p3) {
     for (uint32_t n = 1;; n++) {
         k_msleep((int32_t)(ROT_PERIOD_MS - k_uptime_get() % ROT_PERIOD_MS));
 
+        /* Test-only debugger hook: SVC oops reaches our fatal handler in Zephyr v4.4.2. */
+        if (foc_ctrl_cmd.crash == 0x43524153U) { /* "CRAS" */
+            foc_ctrl_cmd.crash = 0U;
+            k_oops();
+        }
         if (!supervisor_reported && pwm_adc_supervisor_tripped()) {
             LOG_ERR("FOC ISR progress below 150 per 10 ms while powered; power stage off, timer stopped until reset");
             supervisor_reported = true;
@@ -313,17 +393,25 @@ static void report_loop(void* p1, void* p2, void* p3) {
             if (fc.calibrated) {
                 report_power(&st, &fc);
             }
+            report_stack_space("periodic");
         }
 
         const foc_ctrl_capture_t* c = foc_ctrl_capture_get();
 
         if (c != NULL) {
             dump_capture(c, &fc);
+            report_stack_space("after dump_capture");
         }
         const foc_ctrl_ident_t* ident = foc_ctrl_ident_get();
 
         if (ident != NULL) {
             dump_ident(ident);
+            report_stack_space("after dump_ident");
+        }
+        const cog_raw_t* raw = foc_ctrl_map_get();
+        if (raw != NULL) {
+            dump_map(raw, &fc);
+            report_stack_space("after dump_map");
         }
     }
 }
@@ -331,7 +419,7 @@ static void report_loop(void* p1, void* p2, void* p3) {
 int main(void) {
     int ret = encoder_init();
 
-    LOG_INF("Stage 7 build: FOC bench, then the FOC ISR; power stage off until armed (VBUS 14.0-16.5 V, arm key); "
+    LOG_INF("Stage 8 build: FOC bench, then the FOC ISR; power stage off until armed (VBUS 14.0-16.5 V, arm key); "
             "TIM1 CH1-3 also on PA8-PA10, CH3N on PB9 (U7-4)");
     if (ret < 0) {
         LOG_ERR("encoder_init failed: %d", ret);

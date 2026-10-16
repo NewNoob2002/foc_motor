@@ -3,6 +3,7 @@
 #include "foc_bench.h"
 
 #include "analog.h"
+#include "cog_proc.h"
 #include "cycles.h"
 #include "foc_ctrl.h"
 #include "foc_ctrl_motion.h"
@@ -59,6 +60,7 @@ typedef enum {
     STAGE_IDENT_R_FIT,
     STAGE_IDENT_L,
     STAGE_IDENT_COPY,
+    STAGE_FF_LOOKUP,
     STAGE_COUNT,
 } stage_t;
 
@@ -81,6 +83,7 @@ static const char* const stage_names[STAGE_COUNT] = {
     [STAGE_IDENT_R_FIT] = "ident R fit",
     [STAGE_IDENT_L] = "ident L",
     [STAGE_IDENT_COPY] = "ident copy",
+    [STAGE_FF_LOOKUP] = "cog ff lookup",
 };
 
 typedef struct {
@@ -361,6 +364,22 @@ static void prepare_ident(stage_t s, size_t vector) {
     }
 }
 
+/*
+ * Boot-only feed-forward table for timing the lookup. The phase-B map period
+ * and the thread-side processing are not benchmarked here: their fixture
+ * (a full cog_map_t, about 3.3 KB) would cost permanent SRAM. The map period
+ * is measured on the target by the ISR segment timing in mode 8 instead.
+ */
+static struct {
+    int16_t ff[FOC_CTRL_MAP_BINS];
+    uint32_t enc;
+} ff_ctx;
+
+/** Measure centre-aligned interpolation independently of the current loop. */
+static __noinline void run_ff_lookup(void) {
+    ctx.sink = cog_ff_lookup(ff_ctx.ff, ff_ctx.enc);
+}
+
 static void (*const stage_fns[STAGE_COUNT])(void) = {
     [STAGE_EMPTY] = run_empty,
     [STAGE_SINCOS] = run_sincos,
@@ -380,6 +399,7 @@ static void (*const stage_fns[STAGE_COUNT])(void) = {
     [STAGE_IDENT_R_FIT] = run_ident_step,
     [STAGE_IDENT_L] = run_ident_step,
     [STAGE_IDENT_COPY] = run_ident_copy,
+    [STAGE_FF_LOOKUP] = run_ff_lookup,
 };
 
 /* The memory clobbers keep the stage call between the two counter reads. */
@@ -428,8 +448,11 @@ static void measure(void) {
                 if (s == STAGE_CTRL_SPEED) {
                     prepare_speed_ctrl(i);
                 }
-                if (s >= STAGE_IDENT_START) {
+                if (s >= STAGE_IDENT_START && s <= STAGE_IDENT_COPY) {
                     prepare_ident((stage_t)s, i);
+                }
+                if (s == STAGE_FF_LOOKUP) {
+                    ff_ctx.enc = (uint32_t)i * 67U; /* Spread the lookups over bins and the wrap. */
                 }
                 record((stage_t)s, pass, time_stage((stage_t)s));
             }
