@@ -177,3 +177,23 @@ Friction (fwd − rev)/2: 114 mA ≈ 2.5 mNm. **The stage 7 2×-electrical rippl
 - report stack 2 KiB, with stack high-water telemetry;
 - a `k_sys_fatal_error_handler` override that first drives SD1–SD3 low, PC0–PC2 analog and MOE off, then halts;
 - a test hook (`crash` key at cmd +48) to verify the safe-off on the bench.
+
+## Firmware `5027673` flashed (2026-10-15)
+
+Includes the fatal safe-off and the 2 KiB report stack.
+
+- **Supply change:** clean. After run 3 the board rebooted on USB; VBUS 17 mV was checked live just before flashing.
+- **Flash:** probe 63728769, UID `001D0050 42535013 20363130`.
+- **Image:** `fw_5027673.bin` SHA-256 `c6cda238fed2f70f9a74a51fd950b7264d9bef4e1626417f776c3565251dfb38`; verify OK.
+- **Command block:** `0x20002808`, with `crash` at +48 (`0x20002838`).
+- **Boot:** full step 1545 cycles; `vec_compare` PASS; report stack unused 1304 B after the boot bench.
+- **Mode 8 with the stage off:** phase 11, reason 1. GPIOB/GPIOA ODR 0, GPIOC MODER `0xFFFFFFFF`.
+- **Crash hook with the stage off** (write `0x43524153` to +48):
+  - the field reads back 0;
+  - UART: "Kernel oops", then "fatal: power stage off (reason 3)";
+  - TIM1 CR1 `0xC1` → `0xC0` (counter stopped), BDTR `0x8000` → `0` (MOE off);
+  - SD pins low, PC0–PC3 analog.
+
+  MOE = 1 is the normal stage-off state: PC0–PC2 analog and SD low keep the drivers off. The board was then reset through J-Link.
+- **Still to verify with DCBUS:** the crash hook while armed (SD1–SD3 must go from high to low).
+- Raw: `build/hil/stage8/*5027673*`.
