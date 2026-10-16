@@ -104,7 +104,7 @@ Setup as in "First power" (USB unplugged, 500 mA, OCP on, motor clamped, user at
 | Result | Value |
 |---|---|
 | State | 7 (done), no failure, no fault; VBUS 15.01–15.04 V throughout |
-| Alignment | enc 61438 at 90°, 61305 at 0°: Δ −133 counts (ideal 146, i.e. 91 % of 90° electrical at 1.0 A); direction +1 (count rises with the electrical angle); offset 3151 electrical counts **for this boot only** (the incremental count restarts at power-up; the earlier "3745" is from another boot) |
+| Alignment | enc 61438 at 90°, 61305 at 0°: Δ −133 counts; reported direction +1, offset 3151. **Wrong** (see run 2): the 10 Hz `rot` lines show the rotor did not move at the 90° pull (1 → 0 → 4095 → 1), so it started about 180° away and the "90° → 0°" move was really 270° → 360° |
 | R points (v_d, i_d) | 331 mV / 500 mA, 385 / 749, 436 / 999, 487 / 1249, 535 / 1500 |
 | R (fit 0.75–1.5 A) | **0.200 Ω**, residual 1 mV, not flagged nonlinear |
 | V0 (inverter loss) | **235 mV** |
@@ -119,6 +119,21 @@ R is everything in the current path seen from the controller: the motor phase pl
 Causes (disassembly, `docs/evidence/motor_ident_wcet.md`): byte-loop `memset` of the 156-byte state at mode entry, byte-loop `memcpy` of the 88-byte result at publish, library `fminf`/`fmaxf` in the servo and fit, and a `sinf`/`cosf` pair every period. Fixed with explicit field resets and copies, inline clamps, integer period constants, and constant trig for the two fixed angles (0° and 90°).
 
 Flashed on USB power (VBUS 0 mV, VTref 3.320 V, UID `001D0050 42535013 20363130`) through probe S/N 63728769 (a second probe, S/N 20781318, is also plugged in; selected by `-USB`). `fw_a96018a.bin` SHA-256 `0f232611e3e750faa5de1c8d0621e497ef227a9afeac1a7ad3804b01d35bb390`, verify OK. **Command block now at `0x200013D0`.** Boot benchmarks on the target (max cycles, 512 repetitions): ident start 112, servo step 376, R fit step 794, L step 397, result copy 140; `sinf+cosf` (772) is no longer on the ident path. Idle ISR 1946–1951 cycles; offsets IA 1963.04, IC 1996.94; `vec_compare` PASS. The powered ISR maximum in mode 5 is still to be measured.
+
+### Identification run 2 (`a96018a`, DCBUS 15 V, 2026-10-15)
+
+Same setup; probe S/N 63728769; connect with the stage off cost 2 missed periods (as before). Raw: `run2.log`, `jl_ident_run2.out`, `ident_run2_result.txt`.
+
+| Result | Value |
+|---|---|
+| ISR | exec max **2585 cycles (15.2 µs)** over the run (reports 36–42: 2069–2585), **0 overruns**, no new missed period; after the run about 2040, idle 1963 |
+| State | 7 (done), no failure, no fault |
+| R points | 329 mV / 502 mA, 384 / 750, 436 / 1000, 487 / 1250, 534 / 1499 |
+| R, V0, residual | **0.201 Ω**, 233 mV, 1 mV (run 1: 0.200 Ω, 235 mV) |
+| L, ripple | **69 µH**, 573 mA p-p (run 1: 69 µH) |
+| Alignment | enc 61189 at 90°, 61332 at 0°: Δ +143 counts, direction −1, offset 756 (this boot). The `rot` lines show a proper first pull (4095 → 3845) |
+
+Direction is **−1** (the count falls as the electrical angle rises): run 2 directly, and run 1 once its 270° start is taken into account (270° → 360° is +90°, measured −136 counts). Design flaw: the alignment never checks that the first pull moved the rotor. Fix in progress: steps 0° → 120° → 240° → 360°, direction from the two forced +120° moves, which must agree.
 
 ## Next (needs the user's go)
 
