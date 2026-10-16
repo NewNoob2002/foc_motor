@@ -111,6 +111,7 @@ static bool have_last_entry;
 
 /* Set once by pwm_adc_init() before the ISR is enabled. */
 static pwm_adc_step_fn step_fn;
+static void (*fault_fn)(void);
 static uint32_t overruns_in_a_row;
 
 /* Power-stage state: written only by the ISR (and pwm_adc_stop()), read by threads. */
@@ -214,6 +215,7 @@ static void CCM_TEXT fault_latch(uint32_t reason) {
     LL_TIM_DisableAllOutputs(TIM1);
     set_ccr(CCR_DUTY_50, CCR_DUTY_50, CCR_DUTY_50);
     stats.fault |= reason;
+    fault_fn();
 }
 
 /** Place both the Zephyr direct-IRQ wrapper and its inline body in CCM. */
@@ -513,6 +515,9 @@ void pwm_adc_stop(void) {
     power_off();
     LL_TIM_DisableAllOutputs(TIM1);
     LL_TIM_DisableCounter(TIM1);
+    if (fault_fn != NULL) {
+        fault_fn();
+    }
 }
 
 /* Stop permanently if fewer than 150 FOC ISRs ran since the last 10 ms tick; never log here. */
@@ -532,11 +537,12 @@ bool pwm_adc_supervisor_tripped(void) {
     return atomic_get(&supervisor_trip) != 0;
 }
 
-int pwm_adc_init(pwm_adc_step_fn step) {
-    if (step == NULL) {
+int pwm_adc_init(pwm_adc_step_fn step, void (*fault)(void)) {
+    if (step == NULL || fault == NULL) {
         return -EINVAL;
     }
     step_fn = step;
+    fault_fn = fault;
 
     int ret = clocks_on();
 

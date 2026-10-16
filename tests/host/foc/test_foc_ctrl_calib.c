@@ -18,6 +18,23 @@ static uint32_t result_offset;
 static float result_r;
 static float result_l;
 static float result_v0;
+static bool map_result_pending;
+
+/** Linker alias for the production map sequencer outside the terminal fixture. */
+void __real_cog_map_step(cog_map_t* map, const cog_map_in_t* in);
+
+/** Inject only terminal ownership to test control handoff independently of sequencer timing. */
+void __wrap_cog_map_step(cog_map_t* map, const cog_map_in_t* in) {
+    if (map_result_pending) {
+        map_result_pending = false;
+        map->raw.phase = COG_DONE;
+        map->raw.reason = COG_OK;
+        map->voltage = 0.0f;
+        atomic_store_explicit(&map->ready, 1U, memory_order_release);
+    } else {
+        __real_cog_map_step(map, in);
+    }
+}
 
 /** Linker alias for the real identification step used outside the terminal fixture. */
 void __real_motor_ident_step(motor_ident_t* ident, const motor_ident_in_t* in, motor_ident_out_t* out);
@@ -33,6 +50,7 @@ void __wrap_motor_ident_step(motor_ident_t* ident, const motor_ident_in_t* in, m
         ident->result.v0 = result_v0;
         ident->result.r = result_r;
         ident->result.l = result_l;
+        ident->result.points[IDENT_R_BIAS_POINT].v = 0.434f;
         out->v_d = 0.0f;
         out->theta_e_count = 0U;
         out->done = true;
@@ -45,6 +63,7 @@ void __wrap_motor_ident_step(motor_ident_t* ident, const motor_ident_in_t* in, m
 /** Initialize control with plausible current offsets and arm through the real guard. */
 static pwm_adc_sample_t prepare_control(void) {
     result_pending = false;
+    map_result_pending = false;
     result_r = 0.2f;
     result_l = 70e-6f;
     result_v0 = 0.234f;
@@ -572,8 +591,125 @@ static void test_speed_permission_and_trip(void) {
     }
 }
 
+/** Refuse unpowered/uncalibrated maps immediately and publish all terminal reasons. */
+static void test_map_permission_and_abort(void) {
+    pwm_adc_sample_t sample = prepare_control();
+    pwm_adc_cmd_t cmd;
+    foc_ctrl_cmd.mode = FOC_MODE_MAP;
+    foc_ctrl_step(&sample, &cmd);
+    const cog_raw_t* raw = foc_ctrl_map_get();
+    CHECK(raw != NULL && raw->reason == COG_CALIBRATION);
+    CHECK(cmd.a == 0.5f && cmd.b == 0.5f && cmd.c == 0.5f);
+    foc_ctrl_map_release(NULL);
+    foc_ctrl_cmd.mode = FOC_MODE_IDLE;
+    foc_ctrl_step(&sample, &cmd);
+    finish_ident(&sample, -1, 0U);
+    foc_ctrl_cmd.mode = FOC_MODE_MAP;
+    foc_ctrl_step(&sample, &cmd);
+    CHECK(foc_ctrl_map_get() == NULL);
+    foc_ctrl_fault();
+    raw = foc_ctrl_map_get();
+    CHECK(raw != NULL && raw->reason == COG_FAULT);
+    foc_ctrl_map_release(NULL);
+    foc_ctrl_cmd.mode = FOC_MODE_IDLE;
+    foc_ctrl_step(&sample, &cmd);
+    foc_ctrl_cmd.mode = FOC_MODE_MAP;
+    foc_ctrl_step(&sample, &cmd);
+    foc_ctrl_cmd.arm = 0U;
+    foc_ctrl_step(&sample, &cmd);
+    raw = foc_ctrl_map_get();
+    CHECK(raw != NULL && raw->reason == COG_CANCELLED);
+    foc_ctrl_map_release(NULL);
+    foc_ctrl_cmd.mode = FOC_MODE_IDLE;
+    sample.power_on = false;
+    foc_ctrl_step(&sample, &cmd);
+    foc_ctrl_cmd.mode = FOC_MODE_MAP;
+    foc_ctrl_step(&sample, &cmd);
+    raw = foc_ctrl_map_get();
+    CHECK(raw != NULL && raw->reason == COG_NOT_POWERED);
+    CHECK(cmd.a == 0.5f && cmd.b == 0.5f && cmd.c == 0.5f);
+}
+
+/** Exercise step-sequence latching, publication, clamps and invalidation in both powered modes. */
+static void test_cff_latching(void) {
+    for (uint32_t mode = FOC_MODE_CURRENT; mode <= FOC_MODE_SPEED; mode += 3U) {
+        pwm_adc_sample_t sample = prepare_control();
+        pwm_adc_cmd_t cmd;
+        foc_ctrl_snapshot_t snap;
+        finish_ident(&sample, 1, 0U);
+        foc_ctrl_cmd.mode = mode;
+        foc_ctrl_step(&sample, &cmd);
+        foc_ctrl_cmd.cff = 1U;
+        foc_ctrl_cmd.step_seq++;
+        for (uint32_t n = 0U; n < FOC_CTRL_CAPTURE_LEN; n++) {
+            foc_ctrl_step(&sample, &cmd);
+        }
+        foc_ctrl_snapshot(&snap);
+        CHECK(!snap.cff && snap.cff_refused && !snap.ff_valid);
+        foc_ctrl_capture_release();
+        foc_ctrl_cmd.mode = FOC_MODE_MAP;
+        map_result_pending = true;
+        foc_ctrl_step(&sample, &cmd);
+        CHECK(foc_ctrl_map_get() != NULL);
+        int16_t table[FOC_CTRL_MAP_BINS];
+        for (uint32_t b = 0U; b < FOC_CTRL_MAP_BINS; b++) {
+            table[b] = 200;
+        }
+        foc_ctrl_map_release(table);
+        CHECK(foc_ctrl_map_get() == NULL);
+        foc_ctrl_cmd.mode = mode;
+        foc_ctrl_step(&sample, &cmd);
+        foc_ctrl_snapshot(&snap);
+        CHECK(snap.ff_valid && !snap.cff);
+        foc_ctrl_cmd.iq_ma = 400;
+        foc_ctrl_cmd.cff = 1U;
+        foc_ctrl_cmd.spd_rpm = 0;
+        foc_ctrl_cmd.step_seq++;
+        for (uint32_t n = 0U; n < FOC_CTRL_CAPTURE_LEN; n++) {
+            foc_ctrl_step(&sample, &cmd);
+            foc_ctrl_snapshot(&snap);
+            if (mode == FOC_MODE_CURRENT && n + 1U < FOC_CTRL_CAPTURE_PRE) {
+                CHECK(!snap.cff);
+            } else {
+                CHECK(snap.cff && !snap.cff_refused);
+                CHECK_NEAR(snap.i_q_ref, mode == FOC_MODE_CURRENT ? 0.5 : 0.2, 1e-6);
+            }
+            foc_ctrl_cmd.cff = 0U;
+        }
+        const foc_ctrl_capture_t* capture = foc_ctrl_capture_get();
+        if (mode == FOC_MODE_CURRENT) {
+            CHECK(capture != NULL && capture->cff && !capture->cff_refused);
+        }
+        foc_ctrl_capture_release();
+        foc_ctrl_cmd.step_seq++;
+        for (uint32_t n = 0U; n < FOC_CTRL_CAPTURE_LEN; n++) {
+            foc_ctrl_step(&sample, &cmd);
+        }
+        foc_ctrl_snapshot(&snap);
+        CHECK(!snap.cff && !snap.cff_refused);
+        foc_ctrl_capture_release();
+        /* An identification interrupting a pending map report must prevent
+         * late publication of a stale table, even if the thread still holds it.
+         */
+        foc_ctrl_cmd.mode = FOC_MODE_MAP;
+        map_result_pending = true;
+        foc_ctrl_step(&sample, &cmd);
+        CHECK(foc_ctrl_map_get() != NULL);
+        foc_ctrl_cmd.mode = FOC_MODE_IDENT;
+        foc_ctrl_step(&sample, &cmd);
+        foc_ctrl_map_release(table);
+        foc_ctrl_snapshot(&snap);
+        CHECK(!snap.ff_valid);
+        foc_ctrl_step(&sample, &cmd);
+        foc_ctrl_snapshot(&snap);
+        CHECK(!snap.ff_valid);
+    }
+}
+
 /** Run calibration and powered-current fixtures against the production ISR implementation. */
 int main(void) {
+    test_map_permission_and_abort();
+    test_cff_latching();
     test_speed_references();
     test_speed_capture();
     test_speed_permission_and_trip();

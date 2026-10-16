@@ -3,16 +3,22 @@
 #include <math.h>
 #include <stdio.h>
 
+#include "cog_map.h"
+#include "cog_proc.h"
 #include "foc/foc_current.h"
+#include "foc/foc_svpwm.h"
 #include "foc/foc_transform.h"
 #include "foc_speed.h"
 #include "foc_test.h"
 
 #define PI               3.14159265358979323846
+#define TAU              (2.0 * PI)
 #define DT               0.00005
 #define KT               0.0217
 #define PSI              (KT / 10.5)
 #define RIPPLE_BOUND_RPM 8.0
+
+static double cog14_torque;
 
 typedef struct {
     double id;
@@ -51,7 +57,8 @@ static void plant_step(plant_t* p, foc_abc_t duty, double inertia) {
         double vq = -alpha * s + beta * c;
         double did = (vd - 0.2 * p->id + 7.0 * p->omega * 70e-6 * p->iq) / 70e-6;
         double diq = (vq - 0.2 * p->iq - 7.0 * p->omega * (70e-6 * p->id + PSI)) / 70e-6;
-        double torque = KT * p->iq - 1e-6 * p->omega - 0.002 * sin(84.0 * p->theta);
+        double torque =
+            KT * p->iq - 1e-6 * p->omega - 0.002 * sin(84.0 * p->theta) - cog14_torque * sin(14.0 * p->theta);
         /* Coulomb friction opposes motion; static friction balances torque at rest. */
         if (fabs(p->omega) < 1e-5 && fabs(torque) <= 0.0005) {
             p->omega = 0.0;
@@ -154,10 +161,120 @@ static void run_case(double inertia) {
     }
 }
 
-/** Compare nominal tuning with one-third and three-times true inertia. */
+/** Production-kernel controller and independent plant for the Stage 8 experiment. */
+typedef struct {
+    plant_t plant;
+    foc_ctrl_speed_t estimator;
+    foc_speed_loop_t speed;
+    foc_current_t cc;
+    foc_abc_t applied;
+    float rpm;
+} experiment_t;
+
+/** Reset all control history and PWM preload for an independent comparison. */
+static void experiment_init(experiment_t* e) {
+    *e = (experiment_t){0};
+    e->applied = (foc_abc_t){.a = 0.5f, .b = 0.5f, .c = 0.5f};
+    e->cc.pi_d.kp = 70e-6f * 6283.18530718f;
+    e->cc.pi_d.ki = 0.2f * 6283.18530718f;
+    e->cc.pi_q = e->cc.pi_d;
+    foc_ctrl_speed_reset(&e->estimator, 0U);
+    foc_speed_loop_reset(&e->speed);
+}
+
+/** Return the same 12-bit position presented to the firmware. */
+static uint32_t experiment_encoder(const experiment_t* e) {
+    return (uint32_t)(int64_t)floor(e->plant.theta * 4096.0 / TAU) & 4095U;
+}
+
+/** Execute one period using the production map, speed, current and interpolation functions. */
+static void experiment_step(experiment_t* e, cog_map_t* map, float target, const int16_t* table) {
+    uint32_t enc = experiment_encoder(e);
+    bool tick = foc_ctrl_speed_step(&e->estimator, enc);
+    if (tick) {
+        e->rpm = (float)e->estimator.counts * FOC_CTRL_SPD_COUNTS_TO_RPM;
+    }
+    foc_abc_t currents = phase_currents(&e->plant);
+    if (map != NULL) {
+        foc_ab_t ab = foc_clarke(currents);
+        cog_map_in_t in = {.enc = enc,
+                           .alpha = ab.alpha,
+                           .beta = ab.beta,
+                           .rpm = e->rpm,
+                           .iq = e->speed.iq,
+                           .power = true,
+                           .armed = true};
+        cog_map_step(map, &in);
+        target = cog_map_rpm(map);
+    }
+    bool speed_mode = map == NULL || target != 0.0f;
+    if (tick && speed_mode) {
+        foc_speed_loop_update(&e->speed, target, e->rpm, false);
+    }
+    uint32_t angle_count = speed_mode ? (enc * 7U) & 4095U : cog_map_angle(map);
+    double angle = angle_count * TAU / 4096.0;
+    foc_sincos_t sc = {.sin_theta = (float)sin(angle), .cos_theta = (float)cos(angle)};
+    foc_current_out_t out;
+    if (speed_mode) {
+        foc_dq_t ref = {.q = cog_ff_apply(e->speed.iq, 0.5f, table != NULL, table != NULL, table, enc)};
+        foc_ab_t comp = foc_deadtime_comp(foc_inv_clarke(foc_inv_park(ref, sc)), 0.175f, 0.05f);
+        foc_current_step_ff(&e->cc, currents, sc, ref, 15.0f, (float)DT, comp, 1.0f, &out);
+    } else {
+        foc_dq_t voltage = {.d = map->voltage};
+        (void)foc_svpwm(foc_inv_park(voltage, sc), 15.0f, &out.duty);
+    }
+    plant_step(&e->plant, e->applied, 1.5e-5);
+    e->applied = out.duty;
+    CHECK(isfinite(e->plant.omega) && fabs(e->plant.iq) < 2.0);
+}
+
+/** Measure steady speed ripple over four seconds after a two-second settle. */
+static double experiment_ripple(float target, const int16_t* table) {
+    experiment_t e;
+    experiment_init(&e);
+    double sum = 0.0;
+    double square = 0.0;
+    unsigned int count = 0U;
+    for (uint32_t n = 0U; n < 120000U; n++) {
+        experiment_step(&e, NULL, target, table);
+        if (n >= 40000U) {
+            double rpm = e.plant.omega * 60.0 / TAU;
+            sum += rpm;
+            square += rpm * rpm;
+            count++;
+        }
+    }
+    CHECK(fabs(sum / count - target) < 1.0);
+    return sqrt(fmax(0.0, square / count - (sum / count) * (sum / count)));
+}
+
+/** Measure the map through the full sequencer, then compare identical off/on plants. */
+static void run_cogging_experiment(void) {
+    experiment_t e;
+    cog_map_t map = {0};
+    cog_processed_t processed;
+    experiment_init(&e);
+    cog14_torque = 0.003;
+    CHECK(cog_map_start(&map, true, true, 0.434f, 1, 0U));
+    for (uint32_t n = 0U; n <= COG_TIMEOUT_N && cog_map_get(&map) == NULL; n++) {
+        experiment_step(&e, &map, 0.0f, NULL);
+    }
+    printf("sim map: phase %u reason %u duration %.3f s\n", map.raw.phase, map.raw.reason, map.ticks * DT);
+    CHECK(cog_map_get(&map) != NULL && map.raw.phase == COG_DONE);
+    CHECK(cog_process(&map.raw, &processed));
+    for (uint32_t rpm = 60U; rpm <= 100U; rpm += 40U) {
+        double off = experiment_ripple((float)rpm, NULL);
+        double on = experiment_ripple((float)rpm, processed.ff);
+        printf("Stage 8 %u rpm ripple RMS: off %.6f rpm, on %.6f rpm, reduction %.3fx\n", rpm, off, on, off / on);
+        CHECK(on * 3.0 <= off);
+    }
+}
+
+/** Compare nominal tuning with inertia variation, then map and compensate cogging. */
 int main(void) {
     run_case(1.5e-5);
     run_case(0.5e-5);
     run_case(4.5e-5);
+    run_cogging_experiment();
     return foc_test_result("sim_stage7_speed");
 }

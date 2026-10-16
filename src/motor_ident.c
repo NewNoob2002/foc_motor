@@ -150,7 +150,7 @@ static int32_t align_delta(uint32_t from, uint32_t to) {
 }
 
 /** Validate the first two forced positive electrical moves and retain the forward zero park A. */
-static void align_result(motor_ident_t* m, uint32_t enc) {
+static void __attribute__((noinline, section(".text.ident_flash"))) align_result(motor_ident_t* m, uint32_t enc) {
     motor_ident_result_t* r = &m->result;
 
     r->enc_360 = enc;
@@ -178,7 +178,7 @@ static void align_result(motor_ident_t* m, uint32_t enc) {
 }
 
 /** Validate the extra positive/negative moves and circularly average the two zero parks. */
-static void align_two_sided(motor_ident_t* m, uint32_t enc) {
+static void __attribute__((noinline, section(".text.ident_flash"))) align_two_sided(motor_ident_t* m, uint32_t enc) {
     motor_ident_result_t* r = &m->result;
     int32_t forward = align_delta(r->enc_360, r->enc_return_120);
     int32_t backward = align_delta(r->enc_return_120, enc);
@@ -203,7 +203,7 @@ static void align_two_sided(motor_ident_t* m, uint32_t enc) {
 }
 
 /** Fit the four upper current targets once; retain every measured point for inspection. */
-static void fit_resistance(motor_ident_t* m) {
+static void __attribute__((noinline, section(".text.ident_flash"))) fit_resistance(motor_ident_t* m) {
     motor_ident_result_t* r = &m->result;
     float mean_i = 0.0f;
     float mean_v = 0.0f;
@@ -285,6 +285,24 @@ static float injection_sign(uint32_t n) {
     return ((n / IDENT_L_HALF) & 1U) == 0U ? 1.0f : -1.0f;
 }
 
+/** Finish the L fit once in flash; ordinary injection periods remain entirely in CCM. */
+static float __attribute__((noinline, section(".text.ident_flash"))) inductance_result(motor_ident_t* m) {
+    float mean = m->sum_delta / (float)m->increments;
+    if (!(mean > 0.0f) || !isfinite(mean)) {
+        motor_ident_abort(m, IDENT_FAIL_INDUCTANCE);
+        return 0.0f;
+    }
+    m->result.l = IDENT_L_VH * IDENT_PERIOD_S / mean;
+    m->result.ipp = IDENT_L_VH * (float)IDENT_L_HALF * IDENT_PERIOD_S / m->result.l;
+    if (!isfinite(m->result.l) || m->result.ipp > IDENT_L_IPP_MAX_A) {
+        motor_ident_abort(m, IDENT_FAIL_RIPPLE);
+    } else {
+        m->result.state = IDENT_OFFSET_ROT;
+        m->theta_e_count = 0U;
+    }
+    return m->result.state == IDENT_OFFSET_ROT ? m->result.points[IDENT_R_BIAS_POINT].v : 0.0f;
+}
+
 /** Accumulate current increments against the voltage that actually caused them. */
 static float inductance_step(motor_ident_t* m, float i) {
     const uint32_t total = IDENT_L_CYCLES * 2U * IDENT_L_HALF;
@@ -299,26 +317,29 @@ static float inductance_step(motor_ident_t* m, float i) {
     }
     m->prev_i = i;
     if (m->l_n == total + 1U) {
-        float mean = m->sum_delta / (float)m->increments;
-
-        if (!(mean > 0.0f) || !isfinite(mean)) {
-            motor_ident_abort(m, IDENT_FAIL_INDUCTANCE);
-            return 0.0f;
-        }
-        m->result.l = IDENT_L_VH * IDENT_PERIOD_S / mean;
-        m->result.ipp = IDENT_L_VH * (float)IDENT_L_HALF * IDENT_PERIOD_S / m->result.l;
-        if (!isfinite(m->result.l) || m->result.ipp > IDENT_L_IPP_MAX_A) {
-            motor_ident_abort(m, IDENT_FAIL_RIPPLE);
-        } else {
-            m->result.state = IDENT_OFFSET_ROT;
-            m->theta_e_count = 0U;
-        }
-        return m->result.state == IDENT_OFFSET_ROT ? bias : 0.0f;
+        return inductance_result(m);
     }
     float voltage = m->l_n < total ? bias + IDENT_L_VH * injection_sign(m->l_n) : bias;
 
     m->l_n++;
     return voltage;
+}
+
+/** Finish the rotation correction once in flash, preserving fractional means in integer sums. */
+static void __attribute__((noinline, section(".text.ident_flash"))) rotation_result(motor_ident_t* m) {
+    motor_ident_result_t* r = &m->result;
+    const int32_t samples = (int32_t)(IDENT_ROT_DIRECTION_N - IDENT_ROT_SETTLE_N);
+    /* |sum_f +/- sum_b| < 2^28. theta_meas=true+b, err_f=lag-b,
+     * err_b=-lag-b, so correction c=-b and offset_new=offset-c.
+     */
+    r->offset_c = (m->rot_sum_f + m->rot_sum_b) / (2 * samples);
+    r->offset_load = (m->rot_sum_f - m->rot_sum_b) / (2 * samples);
+    if (r->offset_c > 600 || r->offset_c < -600 || r->offset_load < 0 || r->offset_load > 600) {
+        motor_ident_abort(m, IDENT_FAIL_ALIGNMENT);
+        return;
+    }
+    r->offset_e_new = (r->offset_e - (uint32_t)r->offset_c) & (IDENT_COUNTS - 1U);
+    r->state = IDENT_DONE;
 }
 
 /** Sample the preceding command angle, reject slip, and integrate an exact signed Q16 rotation. */
@@ -353,23 +374,7 @@ static float offset_rotation_step(motor_ident_t* m, uint32_t enc) {
             m->rot_backward = true;
             m->rot_n = 0U;
         } else {
-            const int32_t samples = (int32_t)(IDENT_ROT_DIRECTION_N - IDENT_ROT_SETTLE_N);
-            /* Keep fractional means through the final division by combining
-             * the sums first. No int64 is needed: |sum_f +/- sum_b| < 2^28.
-             * theta_meas = true+b: err_f=lag-b and err_b=-lag-b, so c=-b.
-             * Correcting theta_new=theta_meas+c means offset_new=offset-c.
-             */
-            r->offset_c = (m->rot_sum_f + m->rot_sum_b) / (2 * samples);
-            r->offset_load = (m->rot_sum_f - m->rot_sum_b) / (2 * samples);
-            /* Cogging can leave the rough two-sided park about 50 degrees off.
-             * Keep the per-sample slip and rotation load-angle bounds unchanged.
-             */
-            if (r->offset_c > 600 || r->offset_c < -600 || r->offset_load < 0 || r->offset_load > 600) {
-                motor_ident_abort(m, IDENT_FAIL_ALIGNMENT);
-                return 0.0f;
-            }
-            r->offset_e_new = (r->offset_e - (uint32_t)r->offset_c) & (IDENT_COUNTS - 1U);
-            r->state = IDENT_DONE;
+            rotation_result(m);
             return 0.0f;
         }
     }

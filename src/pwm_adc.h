@@ -119,11 +119,14 @@ typedef struct {
 } pwm_adc_stats_t;
 
 /*
+ * fault() publishes control diagnostics after shutdown, including faults that
+ * bypass step(); it must obey the same zero-latency ISR restrictions.
+ *
  * Starts TIM1 (CH1-3 on PA8-PA10, CH3N on PB9, all at 50 %), ADC2 [IA, IC,
  * VBUS] and DMA, with the power stage off; from the first ISR on, step()
  * sets the duties and the power-stage state. Returns 0 or -errno.
  */
-int pwm_adc_init(pwm_adc_step_fn step);
+int pwm_adc_init(pwm_adc_step_fn step, void (*fault)(void));
 
 /*
  * True while: PC3 is analog and SD4 is a low output; only CH1-3 and CH3N
