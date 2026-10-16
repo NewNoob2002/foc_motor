@@ -62,3 +62,26 @@ Fit: I0 1090 mA, **e1 0.3 %, e2 1.1 %**.
 - The speed PI (kp 4.6 mA/rpm, ki 71 mA/(rpm·s)) builds iq too slowly against stiction and cogging at this speed; the rotor breaks free, overshoots, and sticks again, a limit cycle.
 - A speed-loop map at crawl speed does not work on this motor.
 - No fault; ISR max 2396 cycles (segments up to 174 / 2014 / 236).
+
+## Firmware `fc34266` flashed (2026-10-15)
+
+Phase B of the map is now a position-loop sweep (see `docs/evidence/stage8_cogging_software.md`).
+
+- **Supply overlap before the flash (HW-PWR-003):** the board booted on DCBUS for run 1. Its VBUS reading fell from 15.06 V to 71 mV at uptime 00:20:57 without a reset, so USB (or J-Link power) was connected while DCBUS was still on. The overlap time is unknown. The board stayed healthy: no fault, normal reports, and current offsets unchanged.
+- **Flash:** USB power, VBUS 53 mV checked live just before flashing, probe S/N 63728769, UID `001D0050 42535013 20363130`.
+- **Image:** `fw_fc34266.bin` SHA-256 `663e364eb085895df9df3e984cb1275bc996b39e01319cd4cbda98985efc3539` (identical to `build/arm/zephyr/zephyr.bin`); verify OK.
+- **Command block:** `0x20002808` (mode +4, cff +44).
+- **Boot benchmarks:**
+
+  | Item | Cycles |
+  |---|---|
+  | Feed-forward lookup | ≤ 101 |
+  | Mode-7 period, unpowered | 1394 |
+  | Full Stage 5 step | 1507 |
+  | CORDIC | 25–29 |
+  | Idle ISR | 1244–1258 |
+
+  `vec_compare` PASS (64/64 vectors, max error 1.9e-6).
+- **Mode 8 with the stage off:** phase 11 (failed), reason 1 (not powered), ff_valid 0. Register reads: GPIOB ODR 0 (SD1–SD4 low), GPIOA ODR 0, GPIOC MODER `0xFFFFFFFF` (PC0–PC3 analog).
+- **Missed periods:** one, at the close of the J-Link session for the mode-8 check. This is the known disconnect artefact; there were no overruns and no fault.
+- Raw: `build/hil/stage8/` (`jlink_flash_fc34266.txt`, `boot_fc34266.log`, `jlink_t_map_off_fc34266.txt`, `t_map_off_fc34266.log`).
