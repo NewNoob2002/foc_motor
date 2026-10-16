@@ -1,6 +1,6 @@
 # Stage 7 — First power
 
-Status: **entered 2026-10-15** on the user's explicit go ("confirm and go", recorded in `AGENTS.md`). The firmware and the checks without DCBUS pass, and R-18 passes for this firmware (`r18_boot_capture.md`, run 2).
+Status: **done 2026-10-15** (entered on the user's "confirm and go", completed on the user's "stage 7 complete"; both recorded in `AGENTS.md`). The firmware and the checks without DCBUS pass, and R-18 passes for this firmware (`r18_boot_capture.md`, run 2).
 
 ## Decisions recorded before Stage 7
 
@@ -374,10 +374,12 @@ Findings:
 - After a latched fault, the speed and rot telemetry freezes at the last value (99.6 rpm), because the skipped control step no longer updates the snapshot. Misleading, not unsafe; to fix.
 - In mode 7 with the stage off, the speed PI keeps integrating (iq_ref 500 mA). Harmless (the stage is off; re-arming needs idle, which resets the loop).
 
-## Next (needs the user's go)
+## Stage 7 closed (2026-10-15, user confirmed)
 
-Stage 7 first power, in the roadmap order, stopping at the first surprise:
-1. USB unplugged; DCBUS 15 V from the bench supply (500 mA, OCP on); motor clamped, nothing on the shaft; the supply output button within reach. Check +12V (U14 pin 1) is about 12.6 V and that the firmware reports VBUS about 15 V, with the stage still off.
-2. Arm (idle), check that nothing moves and the current reads 0; disarm.
-3. R: with mode 0 and `v_mv` 0, write the arm key and confirm "power ON" (arming needs 20 periods of commanded idle; switching to dc first and arming later does not arm), then mode 1. Keep the key set. Small `v_mv` steps (50, 100, 150 mV …), averaged currents; R from the slope between steps (cancels a constant dead-time offset). Record the encoder count after the rotor aligns (theta offset). Back to idle, clear the key.
-4. L: with `v_mv` 0, arm in idle again and confirm "power ON", then mode 2 and step captures at the same angle. Back to idle, clear the key.
+Open follow-ups, each needing the user's go:
+- **Cogging / torque-ripple feed-forward** for the 2×-electrical speed ripple. Measure the torque ripple against the mechanical angle first, to confirm the source, including an IA/IC gain check at several angles.
+- **Show the VBUS trip on supply loss** with a scope on VBUS and SD1.
+- Telemetry after a latched fault: refresh the speed/rot snapshot, or mark it stale.
+- The speed PI integrating while the stage is off: hold or reset it when unpowered.
+- Measure J (e.g. from an iq step and the acceleration) and set the speed gains from it.
+- **R-02** (no CPU-independent shutdown) remains a blocker for M4 and higher-power tests.

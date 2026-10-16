@@ -83,7 +83,9 @@ Register addresses (RM0440, check against the reference manual): GPIOA `0x4800_0
 - **Do:** combine stages 2–5. The ADC interrupt reads IA/IC (about 0 A) and TIM3, runs the full current-loop code path, and writes CCR1–3. No current can flow, so the PIs sit at their limits; that is expected. To see something meaningful, also run a mode that sends a fixed small voltage vector (`vd` only) through inverse Park at `theta_e` and SVPWM. SD1–SD4 stay low and TIM1 outputs stay disabled (R-19); log the CCR1–3 values (or use PA8–PA10 with a logic analyzer) and turn the shaft by hand.
 - **Done when:** the duty pattern rotates as you turn the shaft (7 electrical turns per mechanical turn); DWT shows WCET under 20 µs and zero overruns over several minutes; a forced overrun is detected.
 
-### Stage 7 — First power (needs the decisions in section 4 and the R-18 capture)
+### Stage 7 — First power (done 2026-10-15)
+
+- **Result (user confirmed 2026-10-15):** automatic identification (R, L, inverter loss, direction, offset with rotation averaging), current loop with dead-time compensation (id step 90 % in 0.10 ms), speed loop holding the mean speed, disarm and forced-fault stops shown. Known limitations: a 2x-electrical speed ripple of ±15–24 rpm (likely magnet cogging; next: cogging feed-forward) and the VBUS trip on supply loss not observed (needs a scope). Record: `docs/evidence/lab_notes/stage7_first_power.md`. R-02 is still a blocker for M4.
 
 - **Learn:** motor parameters, alignment, closing the loops on real hardware.
 - **Do, in order, stopping at the first surprise:**
