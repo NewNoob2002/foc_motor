@@ -158,6 +158,23 @@ Over three runs: R 0.200 / 0.201 / 0.201 Ω, V0 235 / 233 / 234 mV, L 69 / 69 / 
 
 Roadmap stage 7 status: step 1 (first power) done; step 2 (R, L) done; step 4 (alignment) done; step 3 (open-loop rotation) partly covered by the three forced steps; steps 5 (current loop, gains from R and L: kp = L·ωc ≈ 0.43 V/A, ki = R·ωc ≈ 1260 V/(A·s) at 1 kHz) and 6 (speed loop) remain.
 
+### Open-loop check `c03b6ad` (DCBUS 15 V, 2026-10-15)
+
+Firmware `c03b6ad` (mode 6: a voltage vector of `v_mv` rotating at `rate_e` electrical counts/s; per-boot calibration from mode 5; 10 Hz `ol <steps> <theta_cmd> <theta_meas> <err>` with err = cmd − meas). Flashed on USB power (VBUS 71 mV, probe 63728769), SHA-256 `9914e0bf7ad2f042e0125b19f14a068df2cac9e5ae1023ce7d6aaa58de086461`, verify OK; command block `0x20001410` (rate_e +20). Unpowered: the commanded angle advanced 205 counts per 0.1 s at 2048 counts/s, stage off throughout. Raw: `build/hil/stage7/openloop/` (`ident.log`, `ol_fwd.log`, `ol_bwd.log`, `ol_*_err.txt`, `jl_openloop.out`).
+
+On DCBUS: identification run 4 first (direction −1 from −204 / −179 counts, offset 3605, R 0.199 Ω, V0 235 mV, L 71 µH, ISR max 2649 cycles). Then 440 mV (about 1 A) at +2048 and −2048 counts/s (half an electrical turn per second, 14 s per mechanical turn), 16 s each, from theta_cmd 0:
+
+| | Forward | Backward |
+|---|---|---|
+| err after the ramp (counts) | mean −56, sd 152, −332 … +442 | mean −259, sd 133, −598 … +86 |
+| First / last third mean | −95 / −11 | −210 / −282 |
+| ISR max; faults | 2666 cycles; none | 2680 cycles; none |
+
+- **The calibrated angle tracks the rotor** through about 8 electrical turns (more than one mechanical turn) each way. A wrong direction or pole-pair count would accumulate thousands of counts; the error stays bounded, with a position-dependent ±80-count variation between thirds.
+- **Load angle** (fwd − bwd)/2 = 101 counts = **8.9° electrical lag** in both directions, as expected.
+- **Offset bias** (fwd + bwd)/2 = −157 counts = **−13.8° electrical**: the alignment's final park always arrives from the same side (forward from 240°), so friction stops the rotor short. Fix planned: approach 0° from both sides and average.
+- The swing (sd about 12°) is cogging under a 1 A open-loop drive.
+
 ## Next (needs the user's go)
 
 Stage 7 first power, in the roadmap order, stopping at the first surprise:
