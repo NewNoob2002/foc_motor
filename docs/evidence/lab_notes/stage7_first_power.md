@@ -289,6 +289,25 @@ Fresh boot on DCBUS, probe 63728769. Raw: `build/hil/stage7/ccm/` (`run.log`, `r
 - No fault; one missed period at the J-Link connect (stage off).
 - **Fix in progress:** alignment at 1.5 A; per-move tolerance 67°–173° plus a check on the two moves together (205°–275°); rotation correction limit 600 counts. The rotation step makes the final offset precise.
 
+### Cogging-tolerant alignment `50f17c3`: powered timing goal met (DCBUS 15 V, 2026-10-15)
+
+- **Firmware `50f17c3`:**
+  - alignment at 1.5 A;
+  - per-move check 1365 ± 600 electrical counts plus a two-move sum check of 2730 ± 400;
+  - rotation-correction limit 600 counts; L bias kept at 1.0 A.
+  - Host strong-cogging case (144° / 76° moves) passes, with a final offset error of 14 counts.
+- **Flash:** on USB (VBUS 71 mV checked live), SHA-256 `dc3c9c99f01bafebba1c3ffdf532dcdbfab1e893767b3b0134a491668f7e721b`, verify OK; command block `0x200015A8`; `vec_compare` PASS.
+- **Identification run 9** (raw `build/hil/stage7/al2/`):
+  - Δ −202 / −190, direction −1;
+  - park A 60711 / B 60709;
+  - rotation c +56, load 125 counts, offset 958;
+  - R 0.199 Ω, V0 235 mV, L 69 µH;
+  - ISR max 1733 cycles.
+- **Powered mode 4 with DTC:**
+  - id 0 → 0.5 A 90 % in **0.10 ms**, 0.5 → 0 A in **0.05 ms**; overshoot 3 %, noise sd 8–9 mA, iq ±5 mA (sd 17–18).
+  - **ISR exec max 2013 cycles (11.8 µs)**, segments 174 / 1631 / 237, against 3279 before CCM and the 3400 budget.
+  - No fault.
+
 ## Next (needs the user's go)
 
 Stage 7 first power, in the roadmap order, stopping at the first surprise:
