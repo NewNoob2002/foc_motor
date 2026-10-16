@@ -131,12 +131,18 @@ static atomic_t supervisor_trip;
 static volatile uint32_t test_spin_cycles;
 static volatile uint32_t test_spin_count;
 
-static void stats_reset_locked(void) {
+/* Only these per-period helpers belong in CCM; initialization stays in flash. */
+#define CCM_TEXT __attribute__((section(".text.ccm_hot")))
+
+static void CCM_TEXT stats_reset_locked(void) {
     /* This also runs on a reset request in the FOC ISR; avoid a byte-loop memset. */
     stats.isr_count = 0U;
     stats.period_min = UINT32_MAX;
     stats.period_max = 0U;
     stats.exec_max = 0U;
+    stats.pre_max = 0U;
+    stats.step_max = 0U;
+    stats.post_max = 0U;
     stats.cnt_min = UINT16_MAX;
     stats.cnt_max = 0U;
     stats.counting_up = 0U;
@@ -145,7 +151,7 @@ static void stats_reset_locked(void) {
     /* All remaining fields are sticky across reporting windows. */
 }
 
-static uint16_t duty_to_ccr(float duty) {
+static uint16_t CCM_TEXT duty_to_ccr(float duty) {
     /* PWM mode 1, center-aligned: the output is high while CNT < CCR, so duty = CCR / ARR. */
     if (!(duty >= PWM_ADC_DUTY_MIN)) {
         duty = PWM_ADC_DUTY_MIN; /* also NaN */
@@ -156,7 +162,7 @@ static uint16_t duty_to_ccr(float duty) {
 }
 
 /* SD1-SD3 low first, so the gate drivers turn both MOSFETs off before IN stops being driven. */
-static void power_off(void) {
+static void CCM_TEXT power_off(void) {
     LL_GPIO_ResetOutputPin(SD1_PORT, SD1_PIN);
     LL_GPIO_ResetOutputPin(SD23_PORT, SD23_PINS);
     /* MODER 0b11 = analog: the EG2104 IN pull-down (200 kOhm) holds IN low. */
@@ -168,7 +174,7 @@ static void power_off(void) {
  * Pin invariant independent of the power state: PC3 analog, SD4 a low
  * output, CCER only CH1-3 and CH3N.
  */
-static bool fixed_pins_safe(void) {
+static bool CCM_TEXT fixed_pins_safe(void) {
     return (LL_TIM_ReadReg(TIM1, CCER) & ~CCER_ALLOWED) == 0U
            && (LL_GPIO_ReadReg(GPIOC, MODER) & MODER_PC3_MASK) == MODER_PC3_MASK
            && LL_GPIO_GetPinMode(SD23_PORT, SD4_PIN) == LL_GPIO_MODE_OUTPUT
@@ -180,7 +186,7 @@ static bool fixed_pins_safe(void) {
  * set at init while they were analog), then SD1-SD3 go high. Returns false,
  * changing nothing, if the fixed pin invariant does not hold.
  */
-static bool power_on(void) {
+static bool CCM_TEXT power_on(void) {
     if (!fixed_pins_safe()) {
         return false;
     }
@@ -192,7 +198,7 @@ static bool power_on(void) {
     return true;
 }
 
-static void set_ccr(uint16_t a, uint16_t b, uint16_t c) {
+static void CCM_TEXT set_ccr(uint16_t a, uint16_t b, uint16_t c) {
     /* Preload: the values wait for the next update event, the next counter top. */
     LL_TIM_OC_SetCompareCH1(TIM1, a);
     LL_TIM_OC_SetCompareCH2(TIM1, b);
@@ -203,15 +209,23 @@ static void set_ccr(uint16_t a, uint16_t b, uint16_t c) {
 }
 
 /* Power stage off, outputs off (MOE = 0), 50 % duty; the counter keeps running so the ISR keeps its statistics. */
-static void fault_latch(uint32_t reason) {
+static void CCM_TEXT fault_latch(uint32_t reason) {
     power_off();
     LL_TIM_DisableAllOutputs(TIM1);
     set_ccr(CCR_DUTY_50, CCR_DUTY_50, CCR_DUTY_50);
     stats.fault |= reason;
 }
 
+/** Place both the Zephyr direct-IRQ wrapper and its inline body in CCM. */
+void dma_isr(void) CCM_TEXT;
+static inline int dma_isr_body(void) CCM_TEXT;
+
+/** Run the zero-latency control step and record DWT segments without kernel calls. */
 ISR_DIRECT_DECLARE(dma_isr) {
     uint32_t entry = cycles_now();
+    /* A latched fault skips the step: attribute that entry entirely to post. */
+    uint32_t before_step = entry;
+    uint32_t after_step = entry;
 
     uint16_t cnt = (uint16_t)LL_TIM_GetCounter(TIM1);
     bool up = LL_TIM_GetDirection(TIM1) == LL_TIM_COUNTERDIRECTION_UP;
@@ -251,7 +265,9 @@ ISR_DIRECT_DECLARE(dma_isr) {
     if (stats.fault == 0U) {
         pwm_adc_cmd_t cmd;
 
+        before_step = cycles_now();
         step_fn(&sample, &cmd);
+        after_step = cycles_now();
         if (cmd.trip != 0U) {
             fault_latch(cmd.trip);
         } else if (!(cmd.a >= 0.0f && cmd.a <= 1.0f) || !(cmd.b >= 0.0f && cmd.b <= 1.0f)
@@ -292,8 +308,12 @@ ISR_DIRECT_DECLARE(dma_isr) {
         while (cycles_now() - entry < test_spin_cycles) {}
     }
 
-    uint32_t exec = cycles_now() - entry;
+    uint32_t exit = cycles_now();
+    uint32_t exec = exit - entry;
 
+    stats.pre_max = MAX(stats.pre_max, before_step - entry);
+    stats.step_max = MAX(stats.step_max, after_step - before_step);
+    stats.post_max = MAX(stats.post_max, exit - after_step);
     stats.exec_max = MAX(stats.exec_max, exec);
     if (exec > PWM_ADC_EXEC_BUDGET) {
         stats.overruns++;

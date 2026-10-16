@@ -45,9 +45,16 @@ jobs:
           size_tool="$(dirname "$nm_tool")/arm-zephyr-eabi-size"
           test -x "$nm_tool"
           test -x "$size_tool"
+          # size includes executable CCM text in text, so its flash load image
+          # remains charged to the existing flash budget. Check CCM separately;
+          # data/bss stay entirely in the 22 KiB DMA-accessible SRAM1/2.
           read -r text data bss _ < <("$size_tool" build/arm/zephyr/zephyr.elf | tail -n 1)
+          ccm_text="$("$size_tool" -A build/arm/zephyr/zephyr.elf | awk '$1 == ".ccm_text_reloc" {print $2}')"
+          test -n "$ccm_text"
           test "$((text + data))" -le 98304
-          test "$((data + bss))" -le 24576
+          test "$((data + bss))" -le 22528
+          test "$ccm_text" -le 10240
+          echo "budgets: flash $((text + data))/98304 B; SRAM data+bss $((data + bss))/22528 B; CCM $ccm_text/10240 B"
           ! "$nm_tool" build/arm/zephyr/zephyr.elf | grep -Eq '[[:space:]](malloc|calloc|realloc|free|k_malloc|k_calloc|k_heap_alloc)$'
           test "$(grep -c 'output-low;' build/arm/zephyr/zephyr.dts)" -eq 4
           grep -qx 'CONFIG_HEAP_MEM_POOL_SIZE=0' build/arm/zephyr/.config

@@ -104,6 +104,7 @@ static __noinline void report(uint32_t n, const pwm_adc_stats_t* st, bool timing
     if (timing_valid) {
         LOG_INF("report %u: %u ISR/s, period %u..%u cyc, exec max %u cyc (budget %u)", n, st->isr_count, st->period_min,
                 st->period_max, st->exec_max, PWM_ADC_EXEC_BUDGET);
+        LOG_INF("  segments pre/step/post max %u/%u/%u cyc", st->pre_max, st->step_max, st->post_max);
     } else {
         LOG_WRN("report %u: %u ISR/s, DWT was stopped (debugger?) and is restarted; cycle figures invalid", n,
                 st->isr_count);

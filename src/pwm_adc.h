@@ -99,6 +99,9 @@ typedef struct {
     uint32_t period_min; /* DWT cycles between ISR entries */
     uint32_t period_max;
     uint32_t exec_max; /* DWT cycles from ISR entry to exit */
+    uint32_t pre_max;  /* entry to immediately before step_fn; zero when the step is skipped */
+    uint32_t step_max; /* immediately before to immediately after step_fn */
+    uint32_t post_max; /* immediately after step_fn to the exec measurement */
     uint16_t cnt_min;  /* TIM1 CNT at ISR entry */
     uint16_t cnt_max;
     uint32_t counting_up; /* ISRs that saw TIM1 counting up */
@@ -160,7 +163,7 @@ uint32_t pwm_adc_isr_total(void);
  * entry. The copy is consistent: it retries if the ISR ran during it.
  * Returns false if the DWT cycle counter had been stopped (a debugger
  * disconnect does this); it is restarted, and the window's cycle figures
- * (period, exec_max) are invalid.
+ * (period, exec_max, pre_max, step_max, post_max) are invalid.
  */
 bool pwm_adc_stats_take(pwm_adc_stats_t* out);
 

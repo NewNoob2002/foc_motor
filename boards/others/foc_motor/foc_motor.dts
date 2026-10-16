@@ -10,6 +10,18 @@
 	model = "foc_motor STM32G431RB controller";
 	compatible = "foc-motor";
 
+	/*
+	 * RM0440, memory map and embedded SRAM (DS12589 section 3.5 also
+	 * confirms the addresses/sizes): the 10 KiB CCM code window uses
+	 * the CPU I-code/D-code buses with zero wait states. DMA must
+	 * not use this 0x10000000 window; keep all DMA buffers in sram0.
+	 */
+	ccm: memory@10000000 {
+		compatible = "zephyr,memory-region", "mmio-sram";
+		reg = <0x10000000 DT_SIZE_K(10)>;
+		zephyr,memory-region = "CCM";
+	};
+
 	chosen {
 		zephyr,console = &usart3;
 		zephyr,shell-uart = &usart3;
@@ -25,6 +37,16 @@
 	zephyr,user {
 		encoder-z-gpios = <&gpiob 3 (GPIO_ACTIVE_HIGH | GPIO_PULL_UP)>;
 	};
+};
+
+/*
+ * RM0440, embedded SRAM; DS12589 section 3.5: SRAM1 = 16 KiB, SRAM2 =
+ * 6 KiB. The remaining 10 KiB of upstream sram0 is the CCM alias at
+ * 0x20005800 (accessible to DMA through the System bus). Exclude that
+ * alias so stacks, data and DMA cannot overlap CCM code.
+ */
+&sram0 {
+	reg = <0x20000000 DT_SIZE_K(22)>;
 };
 
 &clk_hse {
