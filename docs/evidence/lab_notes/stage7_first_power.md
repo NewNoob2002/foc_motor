@@ -274,6 +274,21 @@ Fresh boot on DCBUS (USB unplugged first), probe 63728769. Raw: `build/hil/stage
 
 `vec_compare` PASS; stage off and pins safe throughout. The powered mode-4 figure with DTC is still to be measured. Raw: `build/hil/stage7/ccm/`.
 
+### Powered run with the CCM firmware (`eeaddaf`, DCBUS 15 V, 2026-10-15)
+
+Fresh boot on DCBUS, probe 63728769. Raw: `build/hil/stage7/ccm/` (`run.log`, `run2.log`, `jl_ccm_run.out`).
+
+- **Powered identification ISR max 1641 cycles (9.7 µs)** (segments up to 174 / 1259 / 236), against 2785 from flash.
+- **Identification failed twice with alignment (reason 5) at identical positions:**
+  - enc 61401 / 61160 / 61036, so Δ −241 and −124 counts = 148° and 76° electrical, against the 120° ± 17.6° tolerance.
+  - The two moves still sum to about 224°.
+  - The `rot` trace shows the 0° → 120° step moving about 154°.
+  - Cause: at 1.0 A the alignment loses to the cogging detents (84 per turn, one every 30° electrical). Friction held the rotor in a detent past 240°, and the next step fell short.
+  - The positions repeat because the detents are deterministic and the rotor started where the previous run ended.
+- With the calibration invalid, **mode 4 was refused while powered** ("mode 4 (refused, idle runs)"), so no id steps ran. Powered mode-4 timing is still to be measured.
+- No fault; one missed period at the J-Link connect (stage off).
+- **Fix in progress:** alignment at 1.5 A; per-move tolerance 67°–173° plus a check on the two moves together (205°–275°); rotation correction limit 600 counts. The rotation step makes the final offset precise.
+
 ## Next (needs the user's go)
 
 Stage 7 first power, in the roadmap order, stopping at the first surprise:
