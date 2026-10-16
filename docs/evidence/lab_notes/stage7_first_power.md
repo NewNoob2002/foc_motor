@@ -261,6 +261,19 @@ Fresh boot on DCBUS (USB unplugged first), probe 63728769. Raw: `build/hil/stage
 - Unpowered mode 4 measures about 2500 cycles; the boot bench gives 1344 for the control step.
 - `FLASH_ACR` = `0x00040704`: 4 wait states, prefetch, I-cache and D-cache all on. The remaining gap is most likely flash/cache misses: the ISR path no longer stays cached between periods. Next: measure the ISR segments with DWT and run the ISR path from CCM SRAM.
 
+### FOC ISR path in CCM SRAM `eeaddaf` (2026-10-15)
+
+- **Design:** `dma_isr`, `foc_ctrl_step`, `motor_ident`, `power_guard`, `lib/foc` and the per-period `pwm_adc` helpers execute from the 10 KiB CCM SRAM (0x10000000, I-code bus, zero wait states), copied before the kernel starts. sram0 is reduced to 22 KiB so the CCM alias at 0x20005800 is not used twice. DMA buffers stay in SRAM1/2. CI counts CCM separately (≤ 10240 B) and tightens the SRAM gate to 22528 B. The ISR reports pre/step/post segment maxima. Design: `docs/evidence/isr_ccm_software.md`.
+- **Flash:** on USB power, VBUS 0 mV checked live by Claude (fresh boot), probe 63728769; SHA-256 `f128c313c7f3490274a38500ea0db861d1444c38a1c0f4ba994d8c3a69422d3d`, verify OK; command block **`0x200015A8`**. Usage: flash 77204 / 98304, SRAM 11340 / 22528, CCM 9056 / 10240 B.
+
+| ISR (cycles, max) | Before (flash, `f396936`) | **CCM (`eeaddaf`)** |
+|---|---|---|
+| Idle | 1890–1908 | **1159–1167** (segments 169 / 781 / 239) |
+| Mode 4, stage off | 2454–2522 | **1516–1547** (segments 170 / 1111–1168 / 238) |
+| Boot bench mode-4 complete | 2082 | 1280 |
+
+`vec_compare` PASS; stage off and pins safe throughout. The powered mode-4 figure with DTC is still to be measured. Raw: `build/hil/stage7/ccm/`.
+
 ## Next (needs the user's go)
 
 Stage 7 first power, in the roadmap order, stopping at the first surprise:
