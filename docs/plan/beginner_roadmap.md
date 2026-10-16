@@ -97,11 +97,18 @@ Register addresses (RM0440, check against the reference manual): GPIOA `0x4800_0
   6. Speed loop.
 - **Done when:** iq follows small steps like the simulation (compare plots), the motor holds a speed, and turning the supply off or a forced fault stops it safely.
 
-### Stage 8 — Cogging feed-forward (started 2026-10-15)
+### Stage 8 — Cogging feed-forward (started 2026-10-15, completed 2026-10-16)
 
 - **Learn:** torque ripple sources (cogging, magnet variation, current-sensor gain mismatch), measuring a disturbance map, feed-forward compensation.
 - **Do, in order:** (1) IA/IC gain check at 12 electrical angles; (2) a slow forward/backward speed-loop run that maps iq against the mechanical angle (cogging = mean, friction = half-difference); (3) a feed-forward of the map in the current and speed loops, switchable.
 - **Done when:** the source of the 2x-electrical speed ripple is identified with data, and the ripple at 60 and 100 rpm is clearly smaller with the feed-forward on than off (same captures as stage 7).
+- **Result (2026-10-16, user confirmed):**
+  - **Sensors ruled out:** the gain check found a current-sensor gain mismatch of about 1 %.
+  - **Mapping method changed:** the slow speed-loop run went stick-slip, so step (2) became a position-loop sweep with a 1.0 A iq limit.
+  - **Source:** 14/turn cogging, 178 mA (about 3.9 mNm), repeatable across two runs.
+  - **Ripple:** the feed-forward cuts the order-14 speed ripple 11× at 60 rpm and 9.4× at 100 rpm.
+  - **Safety fix:** a fatal error used to leave the power stage on; it is now shut off by the fatal handler (verified while armed).
+  - Lab note: `docs/evidence/lab_notes/stage8_cogging.md`.
 
 ## 4. Decisions for you before stage 7
 

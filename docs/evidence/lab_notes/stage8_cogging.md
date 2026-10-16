@@ -1,6 +1,6 @@
 # Stage 8 — Cogging feed-forward
 
-Status: in progress, started 2026-10-15 on the user's go (`AGENTS.md`). Software design and host evidence: `docs/evidence/stage8_cogging_software.md`. Power conditions as for stage 7: DCBUS 15 V, 500 mA, OCP on, supply output button as e-stop, USB and DCBUS never together, no core halts while powered.
+Status: **complete**, started 2026-10-15 on the user's go, completed 2026-10-16 (user: "stage 8 complete"; `AGENTS.md`). Software design and host evidence: `docs/evidence/stage8_cogging_software.md`. Power conditions as for stage 7: DCBUS 15 V, 500 mA, OCP on, supply output button as e-stop, USB and DCBUS never together, no core halts while powered.
 
 ## Starting point (stage 7)
 
