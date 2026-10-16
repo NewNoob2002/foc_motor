@@ -132,3 +132,48 @@ Phase-B iq cap 1.0 A.
   `vec_compare` PASS.
 - **Mode 8 with the stage off:** phase 11, reason 1. GPIOB ODR 0, GPIOA ODR 0, GPIOC MODER `0xFFFFFFFF`. One missed period at the J-Link session close (the known artefact).
 - Raw: `build/hil/stage8/*75821a6*`.
+
+## Run 3 (DCBUS 15 V, 2026-10-15) — map done, then a fatal stack overflow
+
+Firmware `75821a6` (phase-B cap 1.0 A). The board booted fresh on DCBUS after USB was unplugged. Probe 63728769, persistent J-Link session. Raw: `build/hil/stage8/` (`ident_run3.log`, `map_run3.log`, `jl_map_run3.out`, `marks_run3.txt`, `run3_map_ram.bin`, `run3_report_stack.bin`, `run3_ram_all.bin`).
+
+**Identification:** direction −1, rotation c −103, load 107, offset 1449, R 199 mΩ, V0 235 mV, L 69 µH.
+
+**Map:**
+- The gain check completed, and phase B completed both 2-turn sweeps (forward 1:18–1:37, reverse 1:38–1:57 uptime) with no slip.
+- Sampled iq (1 s snapshots) ranged from −443 to +467 mA; voltage limit never hit; ISR max 2373 cycles; no fault.
+
+**Fatal error after the map:**
+- At 1:58.2 the report thread (1 KiB stack) overflowed into its MPU guard: MPU FAULT, MMFAR `0x20002dec` (108 B into `report_stack` @ `0x20002d80`), "ZEPHYR FATAL ERROR 2: Stack overflow", "Halting system".
+- This happened inside `dump_map()` → `cog_process()`, before the first `cogmap_result` line. It was the first time on the target that the `ok` processing path (libm atan2f/sinf/cosf) ran; in runs 1–2 the map failed.
+- `-fstack-usage` frames: `report_loop` 280 B, `dump_map` 256 B, `cog_process` 240 B, `report` 672 B. These come on top of the log packaging, libm, the FP exception frame and the 128 B FP stack guard.
+
+**Safety finding: the power stage stayed on after the halt.**
+- About 35 s after the halt, J-Link (memory access, no core halt) read the following:
+  - TIM1 BDTR `0x8000` (MOE = 1), CCER `0x511`;
+  - GPIOB ODR `0x1` (SD1 high), GPIOC MODER `0xFFFFFFEA` (PC0–PC2 in AF);
+  - CCR1–3 2125 (50 %, zero vector), timer counting.
+- Writing arm = 0 / mode = 0 had no effect.
+- **Cause:** Zephyr's fatal handler spins inside the fault exception at priority 0. That is the same priority as the zero-latency FOC ISR, so the ISR (with its trips and disarm) and the 10 ms k_timer supervisor never run again. The PWM stays frozen at its last duty.
+- Here the last duty was the zero vector, because the map had just finished. A crash during a sweep would freeze a vector of up to 1 V, about 3.8 A DC in a winding with a bus current below 0.3 A, which the 500 mA OCP would not catch.
+- **Recovery:** via J-Link, BDTR = 0 (MOE off), then SD1 (PB0) and SD2/SD3 (PA1/PA2) low through BSRR. Read back: BDTR 0, GPIOA/GPIOB ODR 0. The user then confirmed DC off.
+
+**The map data survived in RAM** (`map` @ `0x20001400`, read with non-halting `savebin`): phase 10 (done), reason 0, ready 1. Samples per bin: 186–12401 forward, 152–13633 reverse. Offline analysis of the raw bins, (fwd + rev)/2 minus its mean:
+
+| Mechanical order | Amplitude | Phase |
+|---|---|---|
+| 1 | 4.4 mA | −133° |
+| 2 | 5.0 mA | −63° |
+| 7 | 13.9 mA | 162° |
+| **14** | **179.6 mA (≈ 3.9 mNm)** | 166° |
+| 21 | 2.4 mA | 147° |
+| 28 | 37.7 mA | −59° |
+| 42 | 7.4 mA | 6° |
+| 84 | 14.9 mA (attenuated by 16-count bins) | −164° |
+
+Friction (fwd − rev)/2: 114 mA ≈ 2.5 mNm. **The stage 7 2×-electrical ripple (3–4 mNm) is confirmed as 14/turn cogging.** The encoder is incremental, so this table is valid only for the crashed boot; the feed-forward needs a fresh map in the next run.
+
+**Fixes before the next powered run** (commit `5027673`, GPT worker task `a46fb236df14`, reviewed; details in `docs/evidence/stage8_fatal_off.md`):
+- report stack 2 KiB, with stack high-water telemetry;
+- a `k_sys_fatal_error_handler` override that first drives SD1–SD3 low, PC0–PC2 analog and MOE off, then halts;
+- a test hook (`crash` key at cmd +48) to verify the safe-off on the bench.
