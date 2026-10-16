@@ -114,6 +114,12 @@ R is everything in the current path seen from the controller: the motor phase pl
 
 **WCET violation:** ISR exec max was 4109 cycles (24.2 µs, one overrun) in the report where mode 5 started, 2707–3378 cycles during the run (3378 in the report with the R fit), 2245 after it, against the 3400-cycle (20 µs) budget; idle is about 1950. No missed period during the run and no fault; one missed period at the J-Link disconnect after disarming (stage off). Fix in progress before further powered runs.
 
+### WCET fix `a96018a` (2026-10-15)
+
+Causes (disassembly, `docs/evidence/motor_ident_wcet.md`): byte-loop `memset` of the 156-byte state at mode entry, byte-loop `memcpy` of the 88-byte result at publish, library `fminf`/`fmaxf` in the servo and fit, and a `sinf`/`cosf` pair every period. Fixed with explicit field resets and copies, inline clamps, integer period constants, and constant trig for the two fixed angles (0° and 90°).
+
+Flashed on USB power (VBUS 0 mV, VTref 3.320 V, UID `001D0050 42535013 20363130`) through probe S/N 63728769 (a second probe, S/N 20781318, is also plugged in; selected by `-USB`). `fw_a96018a.bin` SHA-256 `0f232611e3e750faa5de1c8d0621e497ef227a9afeac1a7ad3804b01d35bb390`, verify OK. **Command block now at `0x200013D0`.** Boot benchmarks on the target (max cycles, 512 repetitions): ident start 112, servo step 376, R fit step 794, L step 397, result copy 140; `sinf+cosf` (772) is no longer on the ident path. Idle ISR 1946–1951 cycles; offsets IA 1963.04, IC 1996.94; `vec_compare` PASS. The powered ISR maximum in mode 5 is still to be measured.
+
 ## Next (needs the user's go)
 
 Stage 7 first power, in the roadmap order, stopping at the first surprise:
