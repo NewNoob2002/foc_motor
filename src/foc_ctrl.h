@@ -32,9 +32,12 @@
  * - FOC_MODE_CURRENT: powered dq loop at the calibrated rotor angle, permitted
  *   only after successful per-boot identification with 0.02<R<2 ohm and
  *   10 uH<L<5 mH. Gains are L*wc and R*wc, wc=2*pi*1000 Hz, with a 1 V
- *   applied-vector/PI cap. Unpowered checks use raw encoder angle and placeholder
- *   gains. Entry resets both references and integrals and takes step_seq as its
- *   baseline. Write id_ma/iq_ma then change step_seq to latch clamped references;
+ *   applied-vector cap. Optional dtc=1 reserves PI headroom for the identified
+ *   per-phase voltage loss; the same 1 V cap covers PI plus compensation.
+ *   DTC requires 0.05<V0<0.6 V and is off by default. Unpowered checks use raw
+ *   encoder angle and placeholder gains. Entry resets both references and integrals
+ *   and takes step_seq as its baseline. Write id_ma/iq_ma/dtc then change step_seq
+ *   to latch clamped references and the accepted DTC state;
  *   a free capture buffer records dq currents, old/new refs and PRE old-reference
  *   samples before the new command applies at top PRE. Busy captures defer the
  *   next sequence until released. Speed above 205 counts/10 ms trips when powered.
@@ -75,6 +78,7 @@
 #define FOC_CTRL_OL_RATE_MAX          4096
 
 /* Current-loop tuning and learning-bench reference/speed limits. */
+#define FOC_CTRL_DTC_BAND_A           0.05f
 #define FOC_CTRL_CC_BW_HZ             1000U
 #define FOC_CTRL_ID_MAX_A             1.0f
 #define FOC_CTRL_IQ_MAX_A             0.5f
@@ -105,6 +109,7 @@ typedef struct {
     int32_t rate_e;    /* +20: open-loop electrical counts/s, clamped to +/-FOC_CTRL_OL_RATE_MAX */
     int32_t id_ma;     /* +24: write both references, then change step_seq to latch */
     int32_t iq_ma;     /* +28: mA, clamped to +/-FOC_CTRL_IQ_MAX_A */
+    uint32_t dtc;      /* +32: 0 off, 1 on; latched with refs on step_seq change */
 } foc_ctrl_cmd_t;
 
 extern volatile foc_ctrl_cmd_t foc_ctrl_cmd;
@@ -123,6 +128,8 @@ typedef struct {
     float ic_offset;
     uint16_t ia_spread; /* max - min ADC codes during calibration */
     uint16_t ic_spread;
+    bool dtc;                  /* latched and accepted compensation request */
+    bool dtc_refused;          /* latched request rejected by V0 plausibility */
     bool calib_valid;          /* successful angle identification in this boot; cleared on new IDENT */
     int32_t calib_direction;   /* +1 or -1, valid only when calib_valid */
     uint32_t calib_offset_e;   /* electrical counts, valid only when calib_valid */
@@ -161,6 +168,8 @@ typedef struct {
     uint32_t theta_e; /* step angle, electrical counts */
     float vbus;       /* V, at the start */
     bool power_on;    /* power stage on during the whole capture */
+    bool dtc;         /* accepted state for the new references at top PRE */
+    bool dtc_refused; /* V0 was outside the strict (0.05, 0.6) V window */
     /* Storage is reused as id/iq in kind 1; samples retain signed mA units. */
     int16_t ia_ma[FOC_CTRL_CAPTURE_LEN];
     int16_t ic_ma[FOC_CTRL_CAPTURE_LEN];

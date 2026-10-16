@@ -52,4 +52,27 @@ void foc_current_step(foc_current_t* cc, foc_abc_t i_abc, foc_sincos_t sc, foc_d
 void foc_current_step_lim(foc_current_t* cc, foc_abc_t i_abc, foc_sincos_t sc, foc_dq_t i_ref, float vbus, float dt_s,
                           float v_lim, foc_current_out_t* out);
 
+/** Apply per-phase saturation using a caller-precomputed reciprocal current band. */
+foc_ab_t foc_deadtime_comp_inv(foc_abc_t i_abc, float vdt, float inv_band);
+
+/**
+ * Return Clarke(vdt * clamp(i_phase / i_band, -1, 1)) for each phase.
+ * Preconditions: finite currents, vdt >= 0, i_band > 0. This small wrapper
+ * folds 1/i_band at the call site when the band is the fixed bench constant,
+ * so the ISR executes multiplications rather than a per-period division.
+ */
+static inline foc_ab_t foc_deadtime_comp(foc_abc_t i_abc, float vdt, float i_band) {
+    return foc_deadtime_comp_inv(i_abc, vdt, 1.0f / i_band);
+}
+
+/**
+ * Add an alpha/beta feed-forward voltage after the PI chain. PI axis and
+ * vector bounds are min(vbus/sqrt(3), max(0.2 V, total_lim - |feedforward|)).
+ * Cap the complete applied vector at total_lim and report it in out->v_dq.
+ * Invalid bus/total limit gives zero output and unchanged integrals, as in
+ * foc_current_step_lim. All other inputs must be finite; total_lim >= 0.2 V.
+ */
+void foc_current_step_ff(foc_current_t* cc, foc_abc_t i_abc, foc_sincos_t sc, foc_dq_t i_ref, float vbus, float dt_s,
+                         foc_ab_t feedforward, float total_lim, foc_current_out_t* out);
+
 #endif /* FOC_CURRENT_H */

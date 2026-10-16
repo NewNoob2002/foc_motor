@@ -4,6 +4,7 @@
 #include "foc_bench.h"
 #include "foc_ctrl.h"
 #include "pwm_adc.h"
+#include "sincos.h"
 
 #include <zephyr/devicetree.h>
 #include <zephyr/devicetree/dma.h>
@@ -125,6 +126,7 @@ static __noinline void report(uint32_t n, const pwm_adc_stats_t* st, bool timing
     LOG_INF("  mode %s, step %u; offsets IA %d.%03d IC %d.%03d counts", mode_names[fc->mode], fc->steps,
             milli(fc->ia_offset) / 1000, milli(fc->ia_offset) % 1000, milli(fc->ic_offset) / 1000,
             milli(fc->ic_offset) % 1000);
+    LOG_INF("  dtc %s%s", fc->dtc ? "on" : "off", fc->dtc_refused ? " (refused: V0 outside 50..600 mV)" : "");
     LOG_INF("  ident phase %u", (unsigned int)fc->ident_phase);
     LOG_INF("  i_d %d mA, i_q %d mA, v_d %d mV, v_q %d mV, limited %d", milli(fc->i_d), milli(fc->i_q), milli(fc->v_d),
             milli(fc->v_q), fc->limited ? 1 : 0);
@@ -149,9 +151,10 @@ static __noinline void report_power(const pwm_adc_stats_t* st, const foc_ctrl_sn
 static __noinline void dump_capture(const foc_ctrl_capture_t* c) {
     if (c->kind == 1U) {
         LOG_INF("cap_begin seq %u, kind 1, refs id %d -> %d iq %d -> %d mA, VBUS %d mV, power %s, %u samples, "
-                "step at %u",
+                "step at %u, dtc %s%s",
                 c->seq, c->old_id_ma, c->new_id_ma, c->old_iq_ma, c->new_iq_ma, milli(c->vbus),
-                c->power_on ? "on" : "OFF", FOC_CTRL_CAPTURE_LEN, FOC_CTRL_CAPTURE_PRE);
+                c->power_on ? "on" : "OFF", FOC_CTRL_CAPTURE_LEN, FOC_CTRL_CAPTURE_PRE, c->dtc ? "on" : "off",
+                c->dtc_refused ? " (refused: implausible V0)" : "");
     } else {
         LOG_INF("cap_begin seq %u, step %u mV at theta_e %u, VBUS %d mV, power %s, %u samples (%u zero, %u on)", c->seq,
                 c->v_mv, c->theta_e, milli(c->vbus), c->power_on ? "on" : "OFF", FOC_CTRL_CAPTURE_LEN,
@@ -190,6 +193,8 @@ static __noinline void dump_ident(const foc_ctrl_ident_t* r) {
             r->delta_b, r->direction, r->offset_e);
     LOG_INF("ident park A %u B %u, return120 %u raw counts; friction half %d electrical counts", r->enc_360,
             r->enc_zero_back, r->enc_return_120, r->friction_half_e);
+    LOG_INF("ident rotation c %d, load %d, offset_e_new %u electrical counts", r->offset_c, r->offset_load,
+            r->offset_e_new);
     k_msleep(CAPTURE_LINE_PAUSE_MS);
     for (uint32_t k = 0U; k < IDENT_R_POINTS; k++) {
         LOG_INF("ident R point %u: %d mV, %d mA", k, milli(r->points[k].v), milli(r->points[k].i));
@@ -227,6 +232,7 @@ static void report_loop(void* p1, void* p2, void* p3) {
     pwm_adc_stats_t st;
     foc_ctrl_snapshot_t fc;
 
+    sincos_init();
     foc_bench_run();
 
     foc_ctrl_init();
@@ -241,7 +247,7 @@ static void report_loop(void* p1, void* p2, void* p3) {
             "offset calibration %u periods; power stage off",
             PWM_ARR, FOC_CTRL_CAL_SAMPLES);
     LOG_INF("command block foc_ctrl_cmd at %p: arm +0, mode +4, v_mv +8, theta_e +12, step_seq +16, rate_e +20; "
-            "id_ma +24, iq_ma +28; arm key 0x%08x",
+            "id_ma +24, iq_ma +28, dtc +32; arm key 0x%08x",
             (void*)&foc_ctrl_cmd, FOC_CTRL_ARM_KEY);
 
     /* Drop the start-up window. */

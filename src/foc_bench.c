@@ -2,10 +2,13 @@
 
 #include "foc_bench.h"
 
+#include "analog.h"
 #include "cycles.h"
+#include "foc_ctrl.h"
 #include "foc_ctrl_motion.h"
 #include "foc_vectors.h"
 #include "motor_ident.h"
+#include "sincos.h"
 
 #include <math.h>
 #include <stdint.h>
@@ -48,6 +51,7 @@ typedef enum {
     STAGE_STEP,       /* foc_vector_step: all of the above in one call */
     STAGE_SINCOS_DBL, /* sin + cos in double, for comparison */
     STAGE_CURRENT,    /* limited mode-4 kernel plus calibrated angle and speed window */
+    STAGE_CTRL,       /* complete unpowered mode-4 foc_ctrl_step */
     STAGE_IDENT_START,
     STAGE_IDENT_SERVO,
     STAGE_IDENT_R_FIT,
@@ -67,6 +71,7 @@ static const char* const stage_names[STAGE_COUNT] = {
     [STAGE_STEP] = "full step",
     [STAGE_SINCOS_DBL] = "sin+cos double",
     [STAGE_CURRENT] = "current capped",
+    [STAGE_CTRL] = "mode4 full off",
     [STAGE_IDENT_START] = "ident start",
     [STAGE_IDENT_SERVO] = "ident servo",
     [STAGE_IDENT_R_FIT] = "ident R fit",
@@ -96,6 +101,71 @@ static struct {
 
 static span_t spans[STAGE_COUNT];
 
+static pwm_adc_sample_t ctrl_sample;
+static pwm_adc_cmd_t ctrl_output;
+
+/** Time the complete production mode-4 control path with synthetic unpowered inputs. */
+static __noinline void run_ctrl(void) {
+    foc_ctrl_step(&ctrl_sample, &ctrl_output);
+}
+
+/** Calibrate only software state before timing; no command is sent to the PWM BSP. */
+static void prepare_ctrl(void) {
+    foc_ctrl_init();
+    ctrl_sample.vbus_code = 0U;
+    ctrl_sample.power_on = false;
+    for (uint32_t n = 0U; n < FOC_CTRL_CAL_SAMPLES; n++) {
+        ctrl_sample.ia_code = (n & 1U) != 0U ? 2049U : 2047U;
+        ctrl_sample.ic_code = ctrl_sample.ia_code;
+        foc_ctrl_step(&ctrl_sample, &ctrl_output);
+    }
+    ctrl_sample.ia_code = 2048U;
+    ctrl_sample.ic_code = 2048U;
+    foc_ctrl_cmd.mode = FOC_MODE_CURRENT;
+    foc_ctrl_step(&ctrl_sample, &ctrl_output);
+    foc_ctrl_cmd.id_ma = 500;
+    foc_ctrl_cmd.step_seq++;
+}
+
+/** Sweep all electrical angles for CORDIC latency and float/double reference error. */
+static void measure_cordic(void) {
+    span_t span = {.min = UINT32_MAX};
+    double error_float = 0.0;
+    double error_double = 0.0;
+    for (uint32_t pass = 0U; pass < BENCH_PASSES; pass++) {
+        for (uint32_t count = 0U; count < 4096U; count++) {
+            unsigned int key = irq_lock();
+            uint32_t start = cycles_now();
+            compiler_barrier();
+            sincos_e_count(count, &ctx.sc.sin_theta, &ctx.sc.cos_theta);
+            compiler_barrier();
+            uint32_t elapsed = cycles_now() - start;
+            irq_unlock(key);
+            span.min = MIN(span.min, elapsed);
+            if (pass == 0U) {
+                span.max_cold = MAX(span.max_cold, elapsed);
+            } else {
+                span.max_warm = MAX(span.max_warm, elapsed);
+            }
+            if (pass == 0U) {
+                float s = ctx.sc.sin_theta;
+                float c = ctx.sc.cos_theta;
+                /* The signed mapping matches the peripheral, including -pi at 2048. */
+                double theta = (double)(int32_t)(count << 20U) * (0x1p-31 * 3.14159265358979323846);
+                double ef =
+                    fmax(fabs((double)s - (double)sinf((float)theta)), fabs((double)c - (double)cosf((float)theta)));
+                double ed = fmax(fabs((double)s - sin(theta)), fabs((double)c - cos(theta)));
+                error_float = fmax(error_float, ef);
+                error_double = fmax(error_double, ed);
+            }
+        }
+    }
+    LOG_INF("%-15s %5u %10u %10u", "CORDIC 4096", span.min, span.max_warm, span.max_cold);
+    /* Nanounits preserve the 1e-6 error target without floating-point log support. */
+    LOG_INF("CORDIC max abs error: vs sinf/cosf %u e-9, vs double sin/cos %u e-9", (uint32_t)ceil(error_float * 1e9),
+            (uint32_t)ceil(error_double * 1e9));
+}
+
 /* Synthetic mode-4 numeric state; it never writes the debugger command block or BSP. */
 static struct {
     foc_current_t cc;
@@ -108,19 +178,18 @@ static struct {
 static __noinline void run_current(void) {
     foc_ctrl_speed_step(&current_ctx.speed, current_ctx.encoder);
     uint32_t angle = foc_ctrl_rotor_angle(current_ctx.encoder, -1, 4095U);
-    float theta = (float)angle * 0.0015339808f;
     foc_sincos_t sc;
     foc_abc_t abc;
     foc_dq_t ref;
 
-    sc.sin_theta = sinf(theta);
-    sc.cos_theta = cosf(theta);
+    sincos_e_count(angle, &sc.sin_theta, &sc.cos_theta);
     abc.a = ctx.in->ia;
     abc.b = -(ctx.in->ia + ctx.in->ic);
     abc.c = ctx.in->ic;
     ref.d = ctx.in->id_ref;
     ref.q = ctx.in->iq_ref;
-    foc_current_step_lim(&current_ctx.cc, abc, sc, ref, ctx.in->vbus, FOC_VECTORS_DT_S, 1.0f, &current_ctx.out);
+    foc_ab_t comp = foc_deadtime_comp(foc_inv_clarke(foc_inv_park(ref, sc)), 0.1755f, FOC_CTRL_DTC_BAND_A);
+    foc_current_step_ff(&current_ctx.cc, abc, sc, ref, ctx.in->vbus, FOC_VECTORS_DT_S, comp, 1.0f, &current_ctx.out);
 }
 
 /** Prepare both speed-window rollover and ordinary samples outside the measured interval. */
@@ -277,6 +346,7 @@ static void (*const stage_fns[STAGE_COUNT])(void) = {
     [STAGE_STEP] = run_step,
     [STAGE_SINCOS_DBL] = run_sincos_dbl,
     [STAGE_CURRENT] = run_current,
+    [STAGE_CTRL] = run_ctrl,
     [STAGE_IDENT_START] = run_ident_start,
     [STAGE_IDENT_SERVO] = run_ident_step,
     [STAGE_IDENT_R_FIT] = run_ident_step,
@@ -358,7 +428,15 @@ void foc_bench_run(void) {
     (void)cycles_start();
     LOG_INF("Stage 5 FOC bench: FPU %s, %u vectors x %u passes, IRQs locked per vector",
             IS_ENABLED(CONFIG_FPU) ? "on (hard-float)" : "off (soft-float)", FOC_VECTORS_COUNT, BENCH_PASSES);
+    /* No FOC ISR exists yet. Save debugger commands while the synthetic full
+     * step benchmark runs; all outputs remain in ctrl_output, never the BSP.
+     */
+    foc_ctrl_cmd_t saved = foc_ctrl_cmd;
+    foc_ctrl_cmd = (foc_ctrl_cmd_t){0};
+    prepare_ctrl();
+    measure_cordic();
     measure();
+    foc_ctrl_cmd = saved;
     /* A J-Link disconnect during the measurement stops CYCCNT (seen on the first stage 5 run: every min read 0). */
     if (!cycles_start()) {
         LOG_WRN("DWT counter stopped during the measurement (debugger disconnect?); the cycle figures are invalid, "
@@ -374,7 +452,7 @@ void foc_bench_run(void) {
 
     uint32_t current_max = MAX(spans[STAGE_CURRENT].max_warm, spans[STAGE_CURRENT].max_cold);
 
-    LOG_INF("mode 4 kernel+angle+speed max %u cycles; complete ISR budget %u (check ISR telemetry)", current_max,
+    LOG_INF("mode 4 kernel+DTC+angle+speed max %u cycles; complete ISR budget %u (check ISR telemetry)", current_max,
             STEP_BUDGET_CYCLES);
 
     /* The results are recomputed here, outside the timing loop, so the dump does not depend on it. */

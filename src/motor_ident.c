@@ -31,6 +31,9 @@ void motor_ident_start(motor_ident_t* m) {
     reset->result.delta_b = 0;
     reset->result.direction = 0;
     reset->result.offset_e = 0U;
+    reset->result.offset_c = 0;
+    reset->result.offset_load = 0;
+    reset->result.offset_e_new = 0U;
     for (uint32_t k = 0U; k < IDENT_R_POINTS; k++) {
         reset->result.points[k].v = 0.0f;
         reset->result.points[k].i = 0.0f;
@@ -52,6 +55,12 @@ void motor_ident_start(motor_ident_t* m) {
     reset->avg_n = 0U;
     reset->l_n = 0U;
     reset->increments = 0U;
+    reset->rot_phase = 0U;
+    reset->rot_remainder = 0;
+    reset->rot_n = 0U;
+    reset->rot_backward = false;
+    reset->rot_sum_f = 0;
+    reset->rot_sum_b = 0;
     reset->reached = false;
     reset->filtered_i = 0.0f;
     reset->servo_v = 0.0f;
@@ -75,6 +84,9 @@ void motor_ident_result_copy(volatile motor_ident_result_t* dst, const motor_ide
     dst->delta_b = src->delta_b;
     dst->direction = src->direction;
     dst->offset_e = src->offset_e;
+    dst->offset_c = src->offset_c;
+    dst->offset_load = src->offset_load;
+    dst->offset_e_new = src->offset_e_new;
     for (uint32_t k = 0U; k < IDENT_R_POINTS; k++) {
         dst->points[k].v = src->points[k].v;
         dst->points[k].i = src->points[k].i;
@@ -294,14 +306,67 @@ static float inductance_step(motor_ident_t* m, float i) {
         if (!isfinite(m->result.l) || m->result.ipp > IDENT_L_IPP_MAX_A) {
             motor_ident_abort(m, IDENT_FAIL_RIPPLE);
         } else {
-            m->result.state = IDENT_DONE;
+            m->result.state = IDENT_OFFSET_ROT;
+            m->theta_e_count = 0U;
         }
-        return 0.0f;
+        return m->result.state == IDENT_OFFSET_ROT ? bias : 0.0f;
     }
     float voltage = m->l_n < total ? bias + IDENT_L_VH * injection_sign(m->l_n) : bias;
 
     m->l_n++;
     return voltage;
+}
+
+/** Sample the preceding command angle, reject slip, and integrate an exact signed Q16 rotation. */
+static float offset_rotation_step(motor_ident_t* m, uint32_t enc) {
+    motor_ident_result_t* r = &m->result;
+    uint32_t raw = (enc % IDENT_COUNTS) * IDENT_POLE_PAIRS;
+    uint32_t measured = ((uint32_t)r->direction * raw - r->offset_e) & (IDENT_COUNTS - 1U);
+    int32_t err = (int32_t)((m->theta_e_count + 2048U - measured) & 4095U) - 2048;
+
+    if (err > 1024 || err < -1024) {
+        motor_ident_abort(m, IDENT_FAIL_ALIGNMENT);
+        return 0.0f;
+    }
+    /* 70000 samples per direction, each |err| <= 1024: each sum fits int32.
+     * Means are divided only at completion; error accumulation uses additions.
+     */
+    if (m->rot_n >= IDENT_ROT_SETTLE_N) {
+        if (m->rot_backward) {
+            m->rot_sum_b += err;
+        } else {
+            m->rot_sum_f += err;
+        }
+    }
+    int32_t rate = m->rot_backward ? -IDENT_ROT_RATE : IDENT_ROT_RATE;
+    int32_t numerator = rate * 65536 + m->rot_remainder;
+    int32_t increment = numerator / 20000;
+    m->rot_remainder = numerator % 20000;
+    m->rot_phase = (m->rot_phase + (uint32_t)increment) & 0x0FFFFFFFU;
+    m->theta_e_count = m->rot_phase >> 16U;
+    if (++m->rot_n == IDENT_ROT_DIRECTION_N) {
+        if (!m->rot_backward) {
+            m->rot_backward = true;
+            m->rot_n = 0U;
+        } else {
+            const int32_t samples = (int32_t)(IDENT_ROT_DIRECTION_N - IDENT_ROT_SETTLE_N);
+            /* Keep fractional means through the final division by combining
+             * the sums first. No int64 is needed: |sum_f +/- sum_b| < 2^28.
+             * theta_meas = true+b: err_f=lag-b and err_b=-lag-b, so c=-b.
+             * Correcting theta_new=theta_meas+c means offset_new=offset-c.
+             */
+            r->offset_c = (m->rot_sum_f + m->rot_sum_b) / (2 * samples);
+            r->offset_load = (m->rot_sum_f - m->rot_sum_b) / (2 * samples);
+            if (r->offset_c > 400 || r->offset_c < -400 || r->offset_load < 0 || r->offset_load > 600) {
+                motor_ident_abort(m, IDENT_FAIL_ALIGNMENT);
+                return 0.0f;
+            }
+            r->offset_e_new = (r->offset_e - (uint32_t)r->offset_c) & (IDENT_COUNTS - 1U);
+            r->state = IDENT_DONE;
+            return 0.0f;
+        }
+    }
+    return r->points[IDENT_R_BIAS_POINT].v;
 }
 
 /** Apply safety checks, advance one bounded phase, and emit the next PWM command. */
@@ -421,6 +486,9 @@ void motor_ident_step(motor_ident_t* m, const motor_ident_in_t* in, motor_ident_
             break;
         case IDENT_INDUCTANCE:
             voltage = inductance_step(m, in->i_d);
+            break;
+        case IDENT_OFFSET_ROT:
+            voltage = offset_rotation_step(m, in->enc_count);
             break;
         default:
             break;

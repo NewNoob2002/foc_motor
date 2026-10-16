@@ -2,6 +2,7 @@
 
 #include "foc_ctrl.h"
 
+#include <sincos.h>
 #include "analog.h"
 #include "encoder.h"
 #include "foc_ctrl_motion.h"
@@ -19,9 +20,6 @@
 
 /* 14-pole motor (docs/hardware/hardware_reference.md, motor table). */
 #define POLE_PAIRS         7U
-
-/* 2 pi / 4096: one electrical count in radians. */
-#define RAD_PER_E_COUNT    0.0015339808f
 
 /*
  * Bus used for the duty scale. The measured VBUS when it is a real bus
@@ -59,7 +57,8 @@ BUILD_ASSERT(FOC_CTRL_CAPTURE_PRE + FOC_CTRL_CAPTURE_ON < FOC_CTRL_CAPTURE_LEN, 
 BUILD_ASSERT(offsetof(foc_ctrl_cmd_t, arm) == 0U && offsetof(foc_ctrl_cmd_t, mode) == 4U
                  && offsetof(foc_ctrl_cmd_t, v_mv) == 8U && offsetof(foc_ctrl_cmd_t, theta_e) == 12U
                  && offsetof(foc_ctrl_cmd_t, step_seq) == 16U && offsetof(foc_ctrl_cmd_t, rate_e) == 20U
-                 && offsetof(foc_ctrl_cmd_t, id_ma) == 24U && offsetof(foc_ctrl_cmd_t, iq_ma) == 28U,
+                 && offsetof(foc_ctrl_cmd_t, id_ma) == 24U && offsetof(foc_ctrl_cmd_t, iq_ma) == 28U
+                 && offsetof(foc_ctrl_cmd_t, dtc) == 32U,
              "debugger command layout changed");
 
 volatile foc_ctrl_cmd_t foc_ctrl_cmd;
@@ -92,6 +91,9 @@ typedef struct {
     uint32_t calib_offset_e;
     float calib_r;
     float calib_l;
+    float calib_v0;
+    bool dtc;
+    bool dtc_refused;
     float calib_kp;
     float calib_ki;
     int32_t id_ref_ma;
@@ -189,36 +191,6 @@ static uint32_t openloop_angle(void) {
     return angle;
 }
 
-/** Return float32 trig constants for the module contract; unknown angles suppress the vector. */
-static foc_sincos_t ident_sincos(uint32_t e_count) {
-    foc_sincos_t sc;
-
-    /* Rounded sin/cos of float32(count * RAD_PER_E_COUNT), evaluated offline.
-     * Explicit literals avoid dependence on compiler trig folding. A contract
-     * violation returns (0, 0): inverse Park then emits zero applied voltage,
-     * rather than silently exciting the rotor at an unrelated angle.
-     */
-    switch (e_count) {
-        case 0U:
-            sc.sin_theta = 0.0f;
-            sc.cos_theta = 1.0f;
-            break;
-        case IDENT_ALIGN_120:
-            sc.sin_theta = 0.866280973f;
-            sc.cos_theta = -0.499557108f;
-            break;
-        case IDENT_ALIGN_240:
-            sc.sin_theta = -0.866280913f;
-            sc.cos_theta = -0.499557137f;
-            break;
-        default:
-            sc.sin_theta = 0.0f;
-            sc.cos_theta = 0.0f;
-            break;
-    }
-    return sc;
-}
-
 static int16_t to_ma(float amps) {
     float ma = amps * 1000.0f;
 
@@ -263,6 +235,8 @@ static float step_capture(float ia, float ic, float vbus, bool power, float v_cm
         st.step_theta = theta_cmd;
         cap.seq = seq;
         cap.kind = 0U;
+        cap.dtc = false;
+        cap.dtc_refused = false;
         cap.v_mv = (uint32_t)(st.step_v * 1000.0f + 0.5f);
         cap.theta_e = st.step_theta;
         cap.vbus = vbus;
@@ -302,6 +276,10 @@ static void current_capture_prepare(float vbus, bool power) {
 
         cap.new_id_ma = MIN(MAX(id, -(int32_t)(FOC_CTRL_ID_MAX_A * 1000.0f)), (int32_t)(FOC_CTRL_ID_MAX_A * 1000.0f));
         cap.new_iq_ma = MIN(MAX(iq, -(int32_t)(FOC_CTRL_IQ_MAX_A * 1000.0f)), (int32_t)(FOC_CTRL_IQ_MAX_A * 1000.0f));
+        bool requested = foc_ctrl_cmd.dtc == 1U;
+        bool plausible = st.calib_valid && st.calib_v0 > 0.05f && st.calib_v0 < 0.6f;
+        cap.dtc = requested && plausible;
+        cap.dtc_refused = requested && !plausible;
         cap.vbus = vbus;
         cap.power_on = power;
         (void)atomic_set(&cap_state, CAPTURE_RUNNING);
@@ -312,6 +290,8 @@ static void current_capture_prepare(float vbus, bool power) {
     if (atomic_get(&cap_state) == CAPTURE_RUNNING && st.cap_idx + 1U == FOC_CTRL_CAPTURE_PRE) {
         st.id_ref_ma = cap.new_id_ma;
         st.iq_ref_ma = cap.new_iq_ma;
+        st.dtc = cap.dtc;
+        st.dtc_refused = cap.dtc_refused;
     }
 }
 
@@ -392,6 +372,8 @@ void foc_ctrl_step(const pwm_adc_sample_t* sample, pwm_adc_cmd_t* cmd) {
         if (mode == FOC_MODE_CURRENT) {
             st.id_ref_ma = 0;
             st.iq_ref_ma = 0;
+            st.dtc = false;
+            st.dtc_refused = false;
             st.current_powered = powered;
             st.step_seen = foc_ctrl_cmd.step_seq;
             st.speed.previous = sample->enc_count;
@@ -475,15 +457,9 @@ void foc_ctrl_step(const pwm_adc_sample_t* sample, pwm_adc_cmd_t* cmd) {
             break;
     }
 
-    float theta = (float)e_count * RAD_PER_E_COUNT;
     foc_sincos_t sc;
 
-    if (mode == FOC_MODE_IDENT) {
-        sc = ident_sincos(e_count);
-    } else {
-        sc.sin_theta = sinf(theta);
-        sc.cos_theta = cosf(theta);
-    }
+    sincos_e_count(e_count, &sc.sin_theta, &sc.cos_theta);
 
     if (mode == FOC_MODE_CURRENT) {
         if (st.current_powered != powered) {
@@ -499,7 +475,16 @@ void foc_ctrl_step(const pwm_adc_sample_t* sample, pwm_adc_cmd_t* cmd) {
             foc_pi_reset(&st.cc.pi_d);
             foc_pi_reset(&st.cc.pi_q);
         }
-        if (powered) {
+        if (powered && st.calib_valid && st.dtc) {
+            /* Reference signs avoid the measured-current noise (SD about 11 mA).
+             * The 50 mA linear band is above that noise and below the bench's
+             * 0.3/0.5 A steps. At A=+I, B=C=-I/2, Clarke of the phase loss is
+             * (2*Vdt + Vdt + Vdt)/3 = 4/3*Vdt, so Vdt = 0.75*identified V0.
+             */
+            foc_abc_t ref_abc = foc_inv_clarke(foc_inv_park(i_ref, sc));
+            foc_ab_t comp = foc_deadtime_comp(ref_abc, 0.75f * st.calib_v0, FOC_CTRL_DTC_BAND_A);
+            foc_current_step_ff(&st.cc, i_abc, sc, i_ref, vbus_duty, DT_S, comp, POWER_GUARD_V_MAX, &out);
+        } else if (powered) {
             foc_current_step_lim(&st.cc, i_abc, sc, i_ref, vbus_duty, DT_S, POWER_GUARD_V_MAX, &out);
         } else {
             foc_current_step(&st.cc, i_abc, sc, i_ref, vbus_duty, DT_S, &out);
@@ -522,9 +507,10 @@ void foc_ctrl_step(const pwm_adc_sample_t* sample, pwm_adc_cmd_t* cmd) {
             motor_ident_step(&st.ident, &ident_in, &ident_out);
             if (st.ident.result.state == IDENT_DONE && !st.calib_valid) {
                 st.calib_direction = st.ident.result.direction;
-                st.calib_offset_e = st.ident.result.offset_e;
+                st.calib_offset_e = st.ident.result.offset_e_new;
                 st.calib_r = st.ident.result.r;
                 st.calib_l = st.ident.result.l;
+                st.calib_v0 = st.ident.result.v0;
                 st.calib_kp = st.calib_l * CURRENT_WC;
                 st.calib_ki = st.calib_r * CURRENT_WC;
                 st.calib_valid = true;
@@ -532,7 +518,7 @@ void foc_ctrl_step(const pwm_adc_sample_t* sample, pwm_adc_cmd_t* cmd) {
             out.v_dq.d = ident_out.v_d;
             if (e_count != ident_out.theta_e_count) {
                 e_count = ident_out.theta_e_count;
-                sc = ident_sincos(e_count);
+                sincos_e_count(e_count, &sc.sin_theta, &sc.cos_theta);
             }
         }
         if (powered || gout.power_on) {
@@ -569,6 +555,8 @@ void foc_ctrl_step(const pwm_adc_sample_t* sample, pwm_adc_cmd_t* cmd) {
     snap.ic_offset = st.ic_offset;
     snap.ia_spread = st.ia_max - st.ia_min;
     snap.ic_spread = st.ic_max - st.ic_min;
+    snap.dtc = st.dtc;
+    snap.dtc_refused = st.dtc_refused;
     snap.calib_valid = st.calib_valid;
     snap.calib_direction = st.calib_direction;
     snap.calib_offset_e = st.calib_offset_e;

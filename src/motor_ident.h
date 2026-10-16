@@ -34,10 +34,17 @@
 #define IDENT_I_ABORT_N       4U     /* consecutive PWM periods (200 us) above IDENT_I_ABORT_A */
 #define IDENT_SERVO_TIMEOUT_N 20000U /* PWM periods, 1 s per target */
 #define IDENT_REACHED_FRAC    0.05f
-#define IDENT_REACHED_N       400U    /* PWM periods, 0.02 s continuously within the band */
-#define IDENT_FILTER_K        0.01f   /* dimensionless; tau about 5 ms */
-#define IDENT_ZERO_BAND_A     0.05f   /* A, decay before switching angle */
-#define IDENT_RUN_TIMEOUT_N   460000U /* PWM periods, 23 s; successful phase maxima total <454002 */
+#define IDENT_REACHED_N       400U  /* PWM periods, 0.02 s continuously within the band */
+#define IDENT_FILTER_K        0.01f /* dimensionless; tau about 5 ms */
+#define IDENT_ZERO_BAND_A     0.05f /* A, decay before switching angle */
+#define IDENT_ROT_RATE        2048  /* electrical counts/s, exact Q16 integration */
+#define IDENT_ROT_TURNS       2U
+#define IDENT_ROT_DIRECTION_N (IDENT_ROT_TURNS * IDENT_COUNTS * 20000U / (uint32_t)IDENT_ROT_RATE)
+#define IDENT_ROT_SETTLE_N    (IDENT_COUNTS * 20000U / (4U * (uint32_t)IDENT_ROT_RATE))
+/* Original phase maxima <454002 periods plus 160000 rotation periods = <614002.
+ * Rotation takes 8 s: two turns per direction at 0.5 electrical turns/s.
+ */
+#define IDENT_RUN_TIMEOUT_N   620000U /* PWM periods, 31 s */
 
 /** Identification phases; terminal states remain latched until start. */
 typedef enum {
@@ -52,6 +59,7 @@ typedef enum {
     IDENT_RESISTANCE,
     IDENT_L_BIAS,
     IDENT_INDUCTANCE,
+    IDENT_OFFSET_ROT,
     IDENT_DONE,
     IDENT_FAILED,
 } motor_ident_phase_t;
@@ -87,7 +95,10 @@ typedef struct {
     int32_t delta_a;         /* signed shortest mechanical displacement, 120 -> 240 degrees, counts */
     int32_t delta_b;         /* signed shortest mechanical displacement, 240 -> 360 degrees, counts */
     int32_t direction;       /* +1 if encoder rises with electrical angle, otherwise -1 */
-    uint32_t offset_e;       /* theta_e = (direction * enc * 7 - offset_e) mod 4096 */
+    uint32_t offset_e;       /* provisional theta_e = (direction * enc * 7 - offset_e) mod 4096 */
+    int32_t offset_c;        /* rotation correction, electrical counts */
+    int32_t offset_load;     /* positive rotation lag, electrical counts */
+    uint32_t offset_e_new;   /* refined offset used by calibration */
     motor_ident_point_t points[IDENT_R_POINTS];
     float r;            /* ohm */
     float v0;           /* V, fitted inverter loss */
@@ -124,6 +135,12 @@ typedef struct {
     uint32_t avg_n;
     uint32_t l_n;
     uint32_t increments;
+    uint32_t rot_phase;    /* Q16 electrical counts, modulo one turn */
+    int32_t rot_remainder; /* signed carry with denominator 20000 */
+    uint32_t rot_n;        /* periods in current direction */
+    bool rot_backward;
+    int32_t rot_sum_f;
+    int32_t rot_sum_b;
     bool reached;
     float filtered_i;
     float servo_v;

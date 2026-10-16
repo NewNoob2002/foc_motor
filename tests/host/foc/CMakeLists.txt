@@ -48,6 +48,8 @@ foc_host_executable(foc_host_smoke smoke.c)
 foc_host_executable(test_transform test_transform.c)
 foc_host_executable(test_pi test_pi.c)
 foc_host_executable(test_svpwm test_svpwm.c)
+foc_host_executable(test_deadtime test_deadtime.c)
+foc_host_test(test_deadtime)
 foc_host_executable(test_current test_current.c)
 # Stage 7 power-stage policy from the firmware (pure C, no Zephyr).
 foc_host_executable(test_power_guard test_power_guard.c)

@@ -17,6 +17,7 @@ static int32_t result_direction;
 static uint32_t result_offset;
 static float result_r;
 static float result_l;
+static float result_v0;
 
 /** Linker alias for the real identification step used outside the terminal fixture. */
 void __real_motor_ident_step(motor_ident_t* ident, const motor_ident_in_t* in, motor_ident_out_t* out);
@@ -28,6 +29,8 @@ void __wrap_motor_ident_step(motor_ident_t* ident, const motor_ident_in_t* in, m
         ident->result.state = IDENT_DONE;
         ident->result.direction = result_direction;
         ident->result.offset_e = result_offset;
+        ident->result.offset_e_new = result_offset;
+        ident->result.v0 = result_v0;
         ident->result.r = result_r;
         ident->result.l = result_l;
         out->v_d = 0.0f;
@@ -44,6 +47,7 @@ static pwm_adc_sample_t prepare_control(void) {
     result_pending = false;
     result_r = 0.2f;
     result_l = 70e-6f;
+    result_v0 = 0.234f;
     foc_ctrl_cmd = (foc_ctrl_cmd_t){0};
     foc_ctrl_init();
     pwm_adc_sample_t sample = {
@@ -370,8 +374,50 @@ static void test_current_plant(bool d_axis) {
     }
 }
 
+/** Latch DTC with the reference transition and reject invalid V0 without enabling compensation. */
+static void test_dtc_latch(void) {
+    const float losses[] = {0.234f, 0.05f, 0.6f, -1.0f, NAN, INFINITY};
+    for (size_t k = 0U; k < sizeof(losses) / sizeof(losses[0]); k++) {
+        pwm_adc_sample_t sample = prepare_control();
+        pwm_adc_cmd_t cmd;
+        foc_ctrl_snapshot_t snap;
+        result_v0 = losses[k];
+        finish_ident(&sample, 1, 0U);
+        foc_ctrl_cmd.mode = FOC_MODE_CURRENT;
+        foc_ctrl_step(&sample, &cmd);
+        foc_ctrl_cmd.id_ma = 500;
+        foc_ctrl_cmd.dtc = 1U;
+        foc_ctrl_step(&sample, &cmd);
+        foc_ctrl_snapshot(&snap);
+        CHECK(!snap.dtc && !snap.dtc_refused && snap.i_d_ref == 0.0f);
+        foc_ctrl_cmd.step_seq++;
+        for (uint32_t n = 0U; n < FOC_CTRL_CAPTURE_LEN; n++) {
+            foc_ctrl_step(&sample, &cmd);
+            foc_ctrl_snapshot(&snap);
+            if (n + 1U < FOC_CTRL_CAPTURE_PRE) {
+                CHECK(!snap.dtc && !snap.dtc_refused);
+            } else {
+                CHECK(snap.dtc == (k == 0U));
+                CHECK(snap.dtc_refused == (k != 0U));
+            }
+            CHECK(hypotf(snap.v_d, snap.v_q) <= 1.000001f);
+            foc_ctrl_cmd.dtc = 0U; /* Edits after the sequence must not alter its latched state. */
+        }
+        const foc_ctrl_capture_t* cap = foc_ctrl_capture_get();
+        CHECK(cap != NULL && cap->dtc == (k == 0U) && cap->dtc_refused == (k != 0U));
+        foc_ctrl_capture_release();
+        foc_ctrl_cmd.step_seq++;
+        for (uint32_t n = 0U; n < FOC_CTRL_CAPTURE_PRE; n++) {
+            foc_ctrl_step(&sample, &cmd);
+        }
+        foc_ctrl_snapshot(&snap);
+        CHECK(!snap.dtc && !snap.dtc_refused);
+    }
+}
+
 /** Run calibration and powered-current fixtures against the production ISR implementation. */
 int main(void) {
+    test_dtc_latch();
     test_current_permission();
     test_current_references();
     test_current_overspeed();

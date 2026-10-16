@@ -18,7 +18,9 @@ typedef struct {
     uint32_t enc0;
     uint32_t raw_base;
     double i0;
-    double rotor; /* unwrapped electrical counts in the physical command frame */
+    double cogging;  /* torque amplitude, 84 mechanical detents = 12 electrical */
+    double stiction; /* optional friction threshold, default 0.1 */
+    double rotor;    /* unwrapped electrical counts in the physical command frame */
     double stop_rotor;
     uint32_t last_theta;
     bool half_move;
@@ -53,12 +55,13 @@ static void rotor_step(plant_t* p, uint32_t theta) {
     const double radians_per_count = 6.283185307179586 / (double)IDENT_COUNTS;
     double error = remainder((double)theta - p->rotor, (double)IDENT_COUNTS);
     double torque = sin(error * radians_per_count) * p->i / (double)IDENT_ALIGN_A;
+    torque -= p->cogging * sin(12.0 * p->rotor * radians_per_count + 2.7);
 
     if (theta != p->last_theta) {
         p->stop_rotor = p->rotor + 0.5 * error;
         p->last_theta = theta;
     }
-    if (p->stuck || fabs(torque) < 0.1) {
+    if (p->stuck || fabs(torque) < (p->stiction > 0.0 ? p->stiction : 0.1)) {
         return;
     }
     double move = 8.0 * torque;
@@ -107,7 +110,7 @@ static motor_ident_t run_plant(plant_t* p) {
         uint32_t previous_angle = m.theta_e_count;
 
         motor_ident_step(&m, &in, &out);
-        if (previous_angle != out.theta_e_count) {
+        if (previous_angle != out.theta_e_count && m.result.state != IDENT_OFFSET_ROT && !out.done) {
             angle_step++;
             CHECK(angle_step < sizeof(angles) / sizeof(angles[0]));
             CHECK(out.theta_e_count == angles[angle_step]);
@@ -122,7 +125,7 @@ static motor_ident_t run_plant(plant_t* p) {
                     CHECK(p->rotor == initial_rotor); /* Reproduce the friction-held unstable first park. */
                 }
             }
-            if (angle_step == 2U && !p->stuck && !p->half_move) {
+            if (angle_step == 2U && !p->stuck && !p->half_move && p->cogging == 0.0) {
                 CHECK(fabs(remainder(p->rotor - IDENT_ALIGN_120, (double)IDENT_COUNTS)) < 70.0);
             }
         }
@@ -235,7 +238,8 @@ static void test_delay_association(void) {
         current += pending * (double)IDENT_PERIOD_S / inductance;
         pending = (double)out.v_d - 0.3;
     }
-    CHECK(out.done && !out.failed && out.v_d == 0.0f);
+    CHECK(!out.done && !out.failed && m.result.state == IDENT_OFFSET_ROT);
+    CHECK_NEAR(out.v_d, 0.3, 1e-6);
     CHECK(m.increments == (IDENT_L_CYCLES - IDENT_L_DISCARD) * 2U * IDENT_L_HALF);
     CHECK_NEAR(m.result.l, inductance, inductance * 1e-3);
     CHECK_NEAR(wrong_one / (double)m.sum_delta, 0.5, 1e-4);
@@ -331,7 +335,7 @@ static void test_safety(void) {
      */
     const uint32_t phase_bound = (6U + 5U + IDENT_R_POINTS + 1U) * IDENT_SERVO_TIMEOUT_N + 6U * IDENT_ALIGN_HOLD_N
                                  + IDENT_R_POINTS * (IDENT_R_SETTLE_N + IDENT_R_AVG_N) + IDENT_R_SETTLE_N
-                                 + IDENT_L_CYCLES * 2U * IDENT_L_HALF + 2U;
+                                 + IDENT_L_CYCLES * 2U * IDENT_L_HALF + 2U + 2U * IDENT_ROT_DIRECTION_N;
 
     CHECK(IDENT_RUN_TIMEOUT_N > phase_bound);
     motor_ident_start(&m);
@@ -533,6 +537,11 @@ static void test_dirty_start(void) {
     CHECK(dirty.sum_v == clean.sum_v);
     CHECK(dirty.sum_i == clean.sum_i);
     CHECK(dirty.prev_i == clean.prev_i);
+    CHECK(dirty.rot_phase == clean.rot_phase && dirty.rot_remainder == clean.rot_remainder);
+    CHECK(dirty.rot_n == clean.rot_n && dirty.rot_backward == clean.rot_backward);
+    CHECK(dirty.rot_sum_f == clean.rot_sum_f && dirty.rot_sum_b == clean.rot_sum_b);
+    CHECK(dirty.result.offset_c == clean.result.offset_c && dirty.result.offset_load == clean.result.offset_load);
+    CHECK(dirty.result.offset_e_new == clean.result.offset_e_new);
     CHECK(dirty.sum_delta == clean.sum_delta);
 }
 
@@ -551,6 +560,9 @@ static void test_result_copy(void) {
         .delta_b = 195,
         .direction = 1,
         .offset_e = 3520U,
+        .offset_c = -157,
+        .offset_load = 102,
+        .offset_e_new = 3677U,
         .r = 0.1f,
         .v0 = 0.15f,
         .max_residual = 0.02f,
@@ -571,6 +583,7 @@ static void test_result_copy(void) {
     CHECK(dst.enc_return_120 == src.enc_return_120 && dst.enc_zero_back == src.enc_zero_back);
     CHECK(dst.friction_half_e == src.friction_half_e);
     CHECK(dst.delta_a == src.delta_a && dst.delta_b == src.delta_b);
+    CHECK(dst.offset_c == src.offset_c && dst.offset_load == src.offset_load && dst.offset_e_new == src.offset_e_new);
     CHECK(dst.direction == src.direction && dst.offset_e == src.offset_e);
     for (uint32_t k = 0U; k < IDENT_R_POINTS; k++) {
         CHECK(dst.points[k].i == src.points[k].i && dst.points[k].v == src.points[k].v);
@@ -584,8 +597,114 @@ static void test_result_copy(void) {
     CHECK(dst.state == src.state && dst.fail_reason == src.fail_reason && !dst.r_nonlinear);
 }
 
+/** Demonstrate removal of an 84-detent cogging park bias with either encoder polarity. */
+static void test_cogging_offset(void) {
+    for (int direction = -1; direction <= 1; direction += 2) {
+        /* Isolate the post-L refinement from the preceding direction/R/L
+         * tests. Park in a physical cogging detent first; do not inject an
+         * artificial encoder bias or snap the rotor to the command.
+         * This waveform has 84 mechanical detents; its local equilibrium
+         * displaces the zero park by about 10 electrical degrees.
+         */
+        plant_t p = {.r = 0.1,
+                     .l = 100e-6,
+                     .vdt = 0.15,
+                     .direction = direction,
+                     .enc0 = 3745U,
+                     .cogging = 0.25,
+                     .stiction = 0.01,
+                     .rotor = -150.0,
+                     .i = 1.0,
+                     .pending_v = 0.25};
+        for (uint32_t n = 0U; n < IDENT_ALIGN_HOLD_N; n++) {
+            rotor_step(&p, 0U);
+        }
+        motor_ident_t m;
+        motor_ident_out_t out;
+        motor_ident_start(&m);
+        m.result.state = IDENT_OFFSET_ROT;
+        m.result.direction = direction;
+        m.result.offset_e = ((uint32_t)direction * encoder_sample(&p) * IDENT_POLE_PAIRS) & 4095U;
+        m.result.points[IDENT_R_BIAS_POINT].v = 0.25f;
+        for (uint32_t n = 0U; n < 2U * IDENT_ROT_DIRECTION_N; n++) {
+            motor_ident_in_t in = {.i_d = (float)p.i, .enc_count = encoder_sample(&p), .power_on = true};
+            motor_ident_step(&m, &in, &out);
+            if (out.done || out.failed) {
+                break;
+            }
+            plant_step(&p, out.v_d, out.theta_e_count);
+        }
+        uint32_t expected = ((uint32_t)direction * p.enc0 * IDENT_POLE_PAIRS) & 4095U;
+        double old_error = remainder((double)m.result.offset_e - expected, 4096.0);
+        double new_error = remainder((double)m.result.offset_e_new - expected, 4096.0);
+        printf("cogging dir %d: park error %.1f -> rotation error %.1f counts; c %d load %d, state %u fail %u\n",
+               direction, old_error, new_error, m.result.offset_c, m.result.offset_load, (unsigned int)m.result.state,
+               (unsigned int)m.result.fail_reason);
+        CHECK(m.result.state == IDENT_DONE);
+        CHECK(fabs(old_error) > 100.0);
+        CHECK(fabs(new_error) < 30.0);
+    }
+}
+
+/** Verify correction sign, wrap, exact rotation timing, settling exclusion and every plausibility boundary. */
+static void test_rotation_validation(void) {
+    const int32_t cases[][3] = {{-157, 102, 1}, {157, 102, 1}, {400, 600, 1}, {-400, 0, 1},
+                                {401, 0, 0},    {-401, 0, 0},  {0, -1, 0},    {0, 601, 0}};
+    for (int32_t dir = -1; dir <= 1; dir += 2) {
+        for (size_t k = 0U; k < sizeof(cases) / sizeof(cases[0]); k++) {
+            motor_ident_t m;
+            motor_ident_out_t out;
+            motor_ident_start(&m);
+            m.result.state = IDENT_OFFSET_ROT;
+            m.result.direction = dir;
+            m.result.offset_e = 4090U;
+            m.result.points[IDENT_R_BIAS_POINT].v = 0.4f;
+            for (uint32_t n = 0U; n < 2U * IDENT_ROT_DIRECTION_N; n++) {
+                int32_t err = cases[k][0] + (m.rot_backward ? -cases[k][1] : cases[k][1]);
+                if (m.rot_n < IDENT_ROT_SETTLE_N) {
+                    err = 999;
+                }
+                uint32_t measured = (m.theta_e_count - (uint32_t)err) & 4095U;
+                /* 7 inverse modulo 4096 = 3511: exact synthetic encoder count. */
+                uint32_t enc = ((uint32_t)dir * (measured + m.result.offset_e) * 3511U) & 4095U;
+                motor_ident_in_t in = {.i_d = 1.0f, .enc_count = enc, .power_on = true};
+                motor_ident_step(&m, &in, &out);
+                if (n + 1U < 2U * IDENT_ROT_DIRECTION_N) {
+                    CHECK(!out.done && !out.failed);
+                    CHECK_NEAR(out.v_d, 0.4, 1e-7);
+                }
+            }
+            CHECK(out.done == (cases[k][2] != 0));
+            CHECK(out.failed == (cases[k][2] == 0));
+            CHECK(out.v_d == 0.0f && m.rot_phase == 0U && m.rot_remainder == 0);
+            CHECK(m.result.offset_c == cases[k][0] && m.result.offset_load == cases[k][1]);
+            if (out.done) {
+                CHECK(m.result.offset_e_new == ((4090U - (uint32_t)cases[k][0]) & 4095U));
+            } else {
+                CHECK(m.result.fail_reason == IDENT_FAIL_ALIGNMENT);
+            }
+        }
+    }
+    const int32_t errors[] = {-1025, -1024, 1024, 1025};
+    for (size_t k = 0U; k < sizeof(errors) / sizeof(errors[0]); k++) {
+        motor_ident_t m;
+        motor_ident_out_t out;
+        motor_ident_start(&m);
+        m.result.state = IDENT_OFFSET_ROT;
+        m.result.direction = 1;
+        motor_ident_in_t in = {.power_on = true, .enc_count = ((0U - (uint32_t)errors[k]) * 3511U) & 4095U};
+        motor_ident_step(&m, &in, &out);
+        CHECK(out.failed == (abs(errors[k]) > 1024));
+        if (out.failed) {
+            CHECK(m.result.fail_reason == IDENT_FAIL_ALIGNMENT && out.v_d == 0.0f);
+        }
+    }
+}
+
 /** Exercise production identification with reachable plants and explicit physical-limit failures. */
 int main(void) {
+    test_cogging_offset();
+    test_rotation_validation();
     test_dirty_start();
     test_result_copy();
     for (int direction = -1; direction <= 1; direction += 2) {
