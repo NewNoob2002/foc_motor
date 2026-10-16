@@ -91,6 +91,12 @@ Alignment (first estimate): at 300–400 mV the rotor pulled to encoder 3742–3
 
 Decision (user, 2026-10-15): identify R, L and the encoder alignment automatically in firmware (current-regulated multi-point R, square-wave L around a DC bias, 90°/0° alignment), with `MOTOR/User/MotorControl/motor_identify.c` as the reference for the idea.
 
+## Identification firmware `ebf9ea8` (2026-10-15)
+
+`src/motor_ident.{c,h}`, mode 5 (`FOC_MODE_IDENT`), design and host evidence in `docs/evidence/motor_ident_software.md`. Order: align at 90° then 0° electrical (1.0 A), R from a current servo at 0.5–1.5 A (line fit over the top four points; reports all five and flags curvature), L from a ±0.2 V square wave around the 1.0 A bias. Bounded to 10 s; aborts on disarm, NaN, 4 consecutive samples above 1.8 A, or a servo target not reached in 1 s; the global 2 A trip and the 1.0 V cap are unchanged. **Command block moved to `0x20001288`** (arm +0, mode +4 …).
+
+Flash: USB power only (supply output off), VTref 3.320 V, UID `001D0050 42535013 20363130`; `fw_ebf9ea8.bin` SHA-256 `71084933f93101c36a63b2843240f1253c0ee054f3349a655890040dbf5059c8`, `verifybin` OK. Boot clean; offsets IA 1962.28, IC 1996.09 counts; worst ISR 1942 cycles; `vec_compare` PASS. Mode 5 with the stage off: result state 8 (failed), reason 1 (not powered), all values 0; SD1–SD4 low, PC0–PC3 analog throughout. Raw files in `build/hil/stage7/ident/`.
+
 ## Next (needs the user's go)
 
 Stage 7 first power, in the roadmap order, stopping at the first surprise:
