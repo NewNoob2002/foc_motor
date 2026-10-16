@@ -97,6 +97,23 @@ Decision (user, 2026-10-15): identify R, L and the encoder alignment automatical
 
 Flash: USB power only (supply output off), VTref 3.320 V, UID `001D0050 42535013 20363130`; `fw_ebf9ea8.bin` SHA-256 `71084933f93101c36a63b2843240f1253c0ee054f3349a655890040dbf5059c8`, `verifybin` OK. Boot clean; offsets IA 1962.28, IC 1996.09 counts; worst ISR 1942 cycles; `vec_compare` PASS. Mode 5 with the stage off: result state 8 (failed), reason 1 (not powered), all values 0; SD1–SD4 low, PC0–PC3 analog throughout. Raw files in `build/hil/stage7/ident/`.
 
+### Identification run 1 (DCBUS 15 V, 2026-10-15)
+
+Setup as in "First power" (USB unplugged, 500 mA, OCP on, motor clamped, user at the output button); one J-Link session opened with the stage off, closed after disarming. Boot: VBUS 15.02 V, offsets IA 1962.53, IC 1996.47 counts. Arm in idle → power ON, then mode 5. Raw: `build/hil/stage7/ident/` (`uart.log`, `jl_ident_run1.out`, `ident_run1_result.txt`, `ident_marks.txt`).
+
+| Result | Value |
+|---|---|
+| State | 7 (done), no failure, no fault; VBUS 15.01–15.04 V throughout |
+| Alignment | enc 61438 at 90°, 61305 at 0°: Δ −133 counts (ideal 146, i.e. 91 % of 90° electrical at 1.0 A); direction +1 (count rises with the electrical angle); offset 3151 electrical counts **for this boot only** (the incremental count restarts at power-up; the earlier "3745" is from another boot) |
+| R points (v_d, i_d) | 331 mV / 500 mA, 385 / 749, 436 / 999, 487 / 1249, 535 / 1500 |
+| R (fit 0.75–1.5 A) | **0.200 Ω**, residual 1 mV, not flagged nonlinear |
+| V0 (inverter loss) | **235 mV** |
+| L (±0.2 V square wave around 1.0 A) | **69 µH**, ripple 572 mA p-p |
+
+R is everything in the current path seen from the controller: the motor phase plus the MOSFETs, shunt, board and wiring. Line to line that is 0.40 Ω, consistent with the user's DMM reading of 0.3–0.4 Ω. V0 explains the failed open-loop R attempt: (400 − 235) mV / 0.200 Ω = 0.83 A, the 833 mA measured at 400 mV; below about 0.5 A the loss is smaller, so the open-loop slopes were wrong. τ = L/R = 0.35 ms.
+
+**WCET violation:** ISR exec max was 4109 cycles (24.2 µs, one overrun) in the report where mode 5 started, 2707–3378 cycles during the run (3378 in the report with the R fit), 2245 after it, against the 3400-cycle (20 µs) budget; idle is about 1950. No missed period during the run and no fault; one missed period at the J-Link disconnect after disarming (stage off). Fix in progress before further powered runs.
+
 ## Next (needs the user's go)
 
 Stage 7 first power, in the roadmap order, stopping at the first surprise:
