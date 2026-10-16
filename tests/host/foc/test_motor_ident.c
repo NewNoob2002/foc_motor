@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 #include <math.h>
 #include <stdio.h>
+#include <string.h>
 
 #include "foc_test.h"
 #include "motor_ident.h"
@@ -293,8 +294,95 @@ static void test_nonlinear_resistance(void) {
     CHECK(m.result.points[0].i > 0.4f && m.result.points[4].i > 1.4f);
 }
 
+/** Verify restart resets every semantic field even when all storage previously held dirty bytes. */
+static void test_dirty_start(void) {
+    motor_ident_t clean = {0};
+    motor_ident_t dirty;
+
+    (void)memset(&dirty, 0xa5, sizeof(dirty));
+    motor_ident_start(&clean);
+    motor_ident_start(&dirty);
+    /* Compare values rather than padding, whose representation is not part of the contract. */
+    CHECK(dirty.result.state == clean.result.state);
+    CHECK(dirty.result.fail_reason == clean.result.fail_reason);
+    CHECK(dirty.result.enc_90 == clean.result.enc_90);
+    CHECK(dirty.result.enc_0 == clean.result.enc_0);
+    CHECK(dirty.result.delta_mech == clean.result.delta_mech);
+    CHECK(dirty.result.direction == clean.result.direction);
+    CHECK(dirty.result.offset_e == clean.result.offset_e);
+    for (uint32_t k = 0U; k < IDENT_R_POINTS; k++) {
+        CHECK(dirty.result.points[k].v == clean.result.points[k].v);
+        CHECK(dirty.result.points[k].i == clean.result.points[k].i);
+    }
+    CHECK(dirty.result.r == clean.result.r);
+    CHECK(dirty.result.v0 == clean.result.v0);
+    CHECK(dirty.result.max_residual == clean.result.max_residual);
+    CHECK(dirty.result.r_nonlinear == clean.result.r_nonlinear);
+    CHECK(dirty.result.l == clean.result.l);
+    CHECK(dirty.result.ipp == clean.result.ipp);
+    CHECK(dirty.theta_e_count == clean.theta_e_count);
+    CHECK(dirty.run_n == clean.run_n);
+    CHECK(dirty.overcurrent_n == clean.overcurrent_n);
+    CHECK(dirty.target_n == clean.target_n);
+    CHECK(dirty.reached_n == clean.reached_n);
+    CHECK(dirty.hold_n == clean.hold_n);
+    CHECK(dirty.point == clean.point);
+    CHECK(dirty.avg_n == clean.avg_n);
+    CHECK(dirty.l_n == clean.l_n);
+    CHECK(dirty.increments == clean.increments);
+    CHECK(dirty.reached == clean.reached);
+    CHECK(dirty.filtered_i == clean.filtered_i);
+    CHECK(dirty.servo_v == clean.servo_v);
+    CHECK(dirty.sum_v == clean.sum_v);
+    CHECK(dirty.sum_i == clean.sum_i);
+    CHECK(dirty.prev_i == clean.prev_i);
+    CHECK(dirty.sum_delta == clean.sum_delta);
+}
+
+/** Check that publication copies every result value, including partial and terminal diagnostics. */
+static void test_result_copy(void) {
+    motor_ident_result_t src = {
+        .state = IDENT_FAILED,
+        .fail_reason = IDENT_FAIL_RIPPLE,
+        .enc_90 = 1234U,
+        .enc_0 = 1088U,
+        .delta_mech = -146,
+        .direction = 1,
+        .offset_e = 3520U,
+        .r = 0.1f,
+        .v0 = 0.15f,
+        .max_residual = 0.02f,
+        .r_nonlinear = true,
+        .l = 100e-6f,
+        .ipp = 0.4f,
+    };
+    motor_ident_result_t dst;
+
+    for (uint32_t k = 0U; k < IDENT_R_POINTS; k++) {
+        src.points[k].i = 0.5f + (float)k * 0.25f;
+        src.points[k].v = 0.15f + src.points[k].i * 0.1f;
+    }
+    (void)memset(&dst, 0xa5, sizeof(dst));
+    motor_ident_result_copy(&dst, &src);
+    CHECK(dst.state == src.state && dst.fail_reason == src.fail_reason);
+    CHECK(dst.enc_90 == src.enc_90 && dst.enc_0 == src.enc_0);
+    CHECK(dst.delta_mech == src.delta_mech && dst.direction == src.direction && dst.offset_e == src.offset_e);
+    for (uint32_t k = 0U; k < IDENT_R_POINTS; k++) {
+        CHECK(dst.points[k].i == src.points[k].i && dst.points[k].v == src.points[k].v);
+    }
+    CHECK(dst.r == src.r && dst.v0 == src.v0 && dst.max_residual == src.max_residual);
+    CHECK(dst.r_nonlinear == src.r_nonlinear && dst.l == src.l && dst.ipp == src.ipp);
+    src.state = IDENT_DONE;
+    src.fail_reason = IDENT_FAIL_NONE;
+    src.r_nonlinear = false;
+    motor_ident_result_copy(&dst, &src);
+    CHECK(dst.state == src.state && dst.fail_reason == src.fail_reason && !dst.r_nonlinear);
+}
+
 /** Exercise production identification with reachable plants and explicit physical-limit failures. */
 int main(void) {
+    test_dirty_start();
+    test_result_copy();
     for (int direction = -1; direction <= 1; direction += 2) {
         test_accuracy(0.1, 100e-6, direction, 3745U);
         test_accuracy(0.2, 300e-6, direction, direction > 0 ? 4000U : 50U);

@@ -4,6 +4,7 @@
 
 #include "cycles.h"
 #include "foc_vectors.h"
+#include "motor_ident.h"
 
 #include <math.h>
 #include <stdint.h>
@@ -20,7 +21,7 @@
 
 LOG_MODULE_REGISTER(foc_bench, LOG_LEVEL_INF);
 
-/* Pass 0 runs with a cold flash cache; passes 1.. are the warm figures. */
+/* Pass 0 is reported as cold; preparation and earlier stages may already warm shared code. */
 #define BENCH_PASSES       8U
 
 /*
@@ -44,13 +45,29 @@ typedef enum {
     STAGE_SVPWM,      /* SVPWM */
     STAGE_STEP,       /* foc_vector_step: all of the above in one call */
     STAGE_SINCOS_DBL, /* sin + cos in double, for comparison */
+    STAGE_IDENT_START,
+    STAGE_IDENT_SERVO,
+    STAGE_IDENT_R_FIT,
+    STAGE_IDENT_L,
+    STAGE_IDENT_COPY,
     STAGE_COUNT,
 } stage_t;
 
 static const char* const stage_names[STAGE_COUNT] = {
-    [STAGE_EMPTY] = "empty call", [STAGE_SINCOS] = "sinf+cosf", [STAGE_CLARKE] = "clarke",
-    [STAGE_PARK] = "park",        [STAGE_PI] = "2x pi",         [STAGE_INV_PARK] = "inv park",
-    [STAGE_SVPWM] = "svpwm",      [STAGE_STEP] = "full step",   [STAGE_SINCOS_DBL] = "sin+cos double",
+    [STAGE_EMPTY] = "empty call",
+    [STAGE_SINCOS] = "sinf+cosf",
+    [STAGE_CLARKE] = "clarke",
+    [STAGE_PARK] = "park",
+    [STAGE_PI] = "2x pi",
+    [STAGE_INV_PARK] = "inv park",
+    [STAGE_SVPWM] = "svpwm",
+    [STAGE_STEP] = "full step",
+    [STAGE_SINCOS_DBL] = "sin+cos double",
+    [STAGE_IDENT_START] = "ident start",
+    [STAGE_IDENT_SERVO] = "ident servo",
+    [STAGE_IDENT_R_FIT] = "ident R fit",
+    [STAGE_IDENT_L] = "ident L",
+    [STAGE_IDENT_COPY] = "ident copy",
 };
 
 typedef struct {
@@ -74,6 +91,14 @@ static struct {
 } ctx;
 
 static span_t spans[STAGE_COUNT];
+
+/* Synthetic numeric state only: these stages never call the BSP or change commands. */
+static struct {
+    motor_ident_t ident;
+    motor_ident_in_t in;
+    motor_ident_out_t out;
+    motor_ident_result_t copy;
+} ident_ctx;
 
 static __noinline void run_empty(void) {
     compiler_barrier();
@@ -124,10 +149,92 @@ static __noinline void run_sincos_dbl(void) {
     ctx.sink = (float)(sin(theta) + cos(theta));
 }
 
+/** Time the same bounded reset used on entry to identification in the ISR. */
+static __noinline void run_ident_start(void) {
+    motor_ident_start(&ident_ctx.ident);
+}
+
+/** Time one identification phase using state prepared outside the timing window. */
+static __noinline void run_ident_step(void) {
+    motor_ident_step(&ident_ctx.ident, &ident_ctx.in, &ident_ctx.out);
+}
+
+/** Time the exact scalar copy used by ident_publish, without altering its ownership state. */
+static __noinline void run_ident_copy(void) {
+    motor_ident_result_copy(&ident_ctx.copy, &ident_ctx.ident.result);
+}
+
+/** Prepare reachable servo, last R sample, and injection states without accessing hardware. */
+static void prepare_ident(stage_t s, size_t vector) {
+    static const float targets[IDENT_R_POINTS] = IDENT_R_TARGETS_A;
+    motor_ident_t* m = &ident_ctx.ident;
+
+    if (s == STAGE_IDENT_START) {
+        (void)memset(m, 0xa5, sizeof(*m));
+        return;
+    }
+    motor_ident_start(m);
+    ident_ctx.in.i_d = 1.0f;
+    ident_ctx.in.enc_count = 3745U;
+    ident_ctx.in.power_on = true; /* Synthetic permission, never passed to the BSP. */
+    m->filtered_i = 1.0f;
+    m->servo_v = 0.25f;
+    if (s == STAGE_IDENT_SERVO) {
+        /* Include arrival, dwell, and both saturation branches across repetitions. */
+        m->reached_n = IDENT_REACHED_N - 1U;
+        m->reached = (vector & 1U) != 0U;
+        m->servo_v = vector % 3U == 0U ? -0.001f : (vector % 3U == 1U ? IDENT_V_MAX : 0.25f);
+        ident_ctx.in.i_d = vector % 3U == 1U ? 0.0f : 1.0f;
+    } else {
+        for (uint32_t k = 0U; k < IDENT_R_POINTS; k++) {
+            m->result.points[k].i = targets[k];
+            m->result.points[k].v = 0.15f + 0.1f * targets[k];
+        }
+        if (s == STAGE_IDENT_R_FIT) {
+            m->result.state = IDENT_RESISTANCE;
+            m->point = IDENT_R_POINTS - 1U;
+            m->reached = true;
+            m->hold_n = IDENT_R_SETTLE_N;
+            m->avg_n = IDENT_R_AVG_N - 1U;
+            ident_ctx.in.i_d = targets[m->point];
+            m->filtered_i = ident_ctx.in.i_d;
+            m->servo_v = m->result.points[m->point].v;
+            m->sum_i = ident_ctx.in.i_d * (float)m->avg_n;
+            m->sum_v = m->servo_v * (float)m->avg_n;
+        } else if (s == STAGE_IDENT_L) {
+            m->result.state = IDENT_INDUCTANCE;
+            m->l_n = IDENT_L_DISCARD * 2U * IDENT_L_HALF + 2U + (uint32_t)(vector % (2U * IDENT_L_HALF));
+            m->prev_i = 0.99f;
+            if ((vector & 8U) != 0U) {
+                /* Include the once-only L calculation and its three FPU divisions. */
+                m->l_n = IDENT_L_CYCLES * 2U * IDENT_L_HALF + 1U;
+                m->increments = (IDENT_L_CYCLES - IDENT_L_DISCARD) * 2U * IDENT_L_HALF - 1U;
+                m->sum_delta = (float)m->increments * 0.1f;
+                m->prev_i = ident_ctx.in.i_d;
+            }
+        } else {
+            m->result.state = IDENT_DONE;
+            m->result.r = 0.1f;
+            m->result.l = 100e-6f;
+        }
+    }
+}
+
 static void (*const stage_fns[STAGE_COUNT])(void) = {
-    [STAGE_EMPTY] = run_empty, [STAGE_SINCOS] = run_sincos, [STAGE_CLARKE] = run_clarke,
-    [STAGE_PARK] = run_park,   [STAGE_PI] = run_pi,         [STAGE_INV_PARK] = run_inv_park,
-    [STAGE_SVPWM] = run_svpwm, [STAGE_STEP] = run_step,     [STAGE_SINCOS_DBL] = run_sincos_dbl,
+    [STAGE_EMPTY] = run_empty,
+    [STAGE_SINCOS] = run_sincos,
+    [STAGE_CLARKE] = run_clarke,
+    [STAGE_PARK] = run_park,
+    [STAGE_PI] = run_pi,
+    [STAGE_INV_PARK] = run_inv_park,
+    [STAGE_SVPWM] = run_svpwm,
+    [STAGE_STEP] = run_step,
+    [STAGE_SINCOS_DBL] = run_sincos_dbl,
+    [STAGE_IDENT_START] = run_ident_start,
+    [STAGE_IDENT_SERVO] = run_ident_step,
+    [STAGE_IDENT_R_FIT] = run_ident_step,
+    [STAGE_IDENT_L] = run_ident_step,
+    [STAGE_IDENT_COPY] = run_ident_copy,
 };
 
 /* The memory clobbers keep the stage call between the two counter reads. */
@@ -162,6 +269,9 @@ static void measure(void) {
 
             ctx.in = &foc_vectors_in[i];
             for (size_t s = 0; s < STAGE_COUNT; s++) {
+                if (s >= STAGE_IDENT_START) {
+                    prepare_ident((stage_t)s, i);
+                }
                 record((stage_t)s, pass, time_stage((stage_t)s));
             }
             irq_unlock(key);

@@ -244,6 +244,38 @@ static void test_ident_powered(void) {
     foc_ab_t vector = applied_vector(&cmd, snap.vbus);
 
     CHECK(fabsf(vector.alpha) < 1e-5f && vector.beta > 0.0f);
+
+    /* Drive the synthetic current through alignment and decay so both fixed
+     * angles are checked against the original sinf/cosf Park calculation.
+     */
+    for (uint32_t angle = 0U; angle < 2U; angle++) {
+        if (angle != 0U) {
+            for (uint32_t k = 0U; k < IDENT_ALIGN_HOLD_N + 2U * IDENT_REACHED_N + 2000U; k++) {
+                sample.ia_code = 2048U;
+                sample.ic_code = snap.ident_phase == IDENT_ALIGN_FIRST ? 1994U : 2048U;
+                foc_ctrl_step(&sample, &cmd);
+                foc_ctrl_snapshot(&snap);
+                if (snap.ident_phase == IDENT_ALIGN_ZERO) {
+                    break;
+                }
+            }
+            CHECK(snap.ident_phase == IDENT_ALIGN_ZERO);
+        }
+        sample.ia_code = 2079U;
+        sample.ic_code = 2004U;
+        foc_ctrl_step(&sample, &cmd);
+        foc_ctrl_snapshot(&snap);
+        CHECK(snap.theta_e_count == (angle == 0U ? IDENT_ALIGN_90 : 0U));
+        float theta = (float)snap.theta_e_count * 0.0015339808f;
+        foc_sincos_t sc = {.sin_theta = sinf(theta), .cos_theta = cosf(theta)};
+        foc_abc_t current = {.a = 31.0f * ANALOG_PHASE_A_PER_CODE,
+                             .b = 13.0f * ANALOG_PHASE_A_PER_CODE,
+                             .c = -44.0f * ANALOG_PHASE_A_PER_CODE};
+        foc_dq_t expected = foc_park(foc_clarke(current), sc);
+
+        CHECK_NEAR(snap.i_d, expected.d, 1e-7);
+        CHECK_NEAR(snap.i_q, expected.q, 1e-7);
+    }
     foc_ctrl_cmd.arm = 0U;
     foc_ctrl_step(&sample, &cmd);
     const foc_ctrl_ident_t* result = foc_ctrl_ident_get();

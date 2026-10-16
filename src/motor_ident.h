@@ -8,34 +8,34 @@
 #define IDENT_PERIOD_S        50e-6f /* s, exactly one PWM period */
 #define IDENT_COUNTS          4096U  /* encoder/electrical counts per revolution */
 #define IDENT_POLE_PAIRS      7U
-#define IDENT_ALIGN_90        1024U /* electrical counts */
-#define IDENT_ALIGN_A         1.0f  /* A */
-#define IDENT_ALIGN_HOLD_S    0.5f  /* s after reaching the target */
-#define IDENT_ALIGN_TOL_E     200   /* electrical counts */
+#define IDENT_ALIGN_90        1024U  /* electrical counts */
+#define IDENT_ALIGN_A         1.0f   /* A */
+#define IDENT_ALIGN_HOLD_N    10000U /* PWM periods, 0.5 s after reaching the target */
+#define IDENT_ALIGN_TOL_E     200    /* electrical counts */
 #define IDENT_R_POINTS        5U
 #define IDENT_R_TARGETS_A     {0.5f, 0.75f, 1.0f, 1.25f, 1.5f} /* A */
 #define IDENT_R_FIT_FIRST     1U                               /* omit the nonlinear 0.5 A point */
 #define IDENT_R_BIAS_POINT    2U                               /* 1.0 A point */
-#define IDENT_R_SETTLE_S      0.2f                             /* s after reaching each target */
+#define IDENT_R_SETTLE_N      4000U                            /* PWM periods, 0.2 s after reaching each target */
 #define IDENT_R_AVG_N         2000U                            /* PWM periods */
 #define IDENT_R_RESIDUAL_FRAC 0.05f
 #define IDENT_R_SLOPE_FRAC    0.20f
-#define IDENT_R_TOP_A         1.5f  /* A */
-#define IDENT_L_VH            0.2f  /* V, square-wave amplitude */
-#define IDENT_L_HALF          4U    /* PWM periods per half cycle */
-#define IDENT_L_CYCLES        2500U /* square cycles */
-#define IDENT_L_DISCARD       50U   /* initial square cycles */
-#define IDENT_L_IPP_MAX_A     0.8f  /* A, peak-to-peak */
-#define IDENT_SERVO_KI        5.0f  /* V/(A s) */
-#define IDENT_V_MAX           0.9f  /* V, servo clamp */
-#define IDENT_I_ABORT_A       1.8f  /* A, slow servo runaway threshold */
-#define IDENT_I_ABORT_N       4U    /* consecutive PWM periods (200 us) above IDENT_I_ABORT_A */
-#define IDENT_SERVO_TIMEOUT_S 1.0f  /* s per target */
+#define IDENT_R_TOP_A         1.5f   /* A */
+#define IDENT_L_VH            0.2f   /* V, square-wave amplitude */
+#define IDENT_L_HALF          4U     /* PWM periods per half cycle */
+#define IDENT_L_CYCLES        2500U  /* square cycles */
+#define IDENT_L_DISCARD       50U    /* initial square cycles */
+#define IDENT_L_IPP_MAX_A     0.8f   /* A, peak-to-peak */
+#define IDENT_SERVO_KI        5.0f   /* V/(A s) */
+#define IDENT_V_MAX           0.9f   /* V, servo clamp */
+#define IDENT_I_ABORT_A       1.8f   /* A, slow servo runaway threshold */
+#define IDENT_I_ABORT_N       4U     /* consecutive PWM periods (200 us) above IDENT_I_ABORT_A */
+#define IDENT_SERVO_TIMEOUT_N 20000U /* PWM periods, 1 s per target */
 #define IDENT_REACHED_FRAC    0.05f
-#define IDENT_REACHED_S       0.02f /* s continuously within the band */
-#define IDENT_FILTER_K        0.01f /* dimensionless; tau about 5 ms */
-#define IDENT_ZERO_BAND_A     0.05f /* A, decay before switching angle */
-#define IDENT_RUN_TIMEOUT_S   10.0f /* s, absolute run bound */
+#define IDENT_REACHED_N       400U    /* PWM periods, 0.02 s continuously within the band */
+#define IDENT_FILTER_K        0.01f   /* dimensionless; tau about 5 ms */
+#define IDENT_ZERO_BAND_A     0.05f   /* A, decay before switching angle */
+#define IDENT_RUN_TIMEOUT_N   200000U /* PWM periods, 10 s absolute run bound */
 
 /** Identification phases; terminal states remain latched until start. */
 typedef enum {
@@ -131,6 +131,9 @@ void motor_ident_start(motor_ident_t* ident);
  * DONE/FAILED always output zero and remain latched until restarted.
  */
 void motor_ident_step(motor_ident_t* ident, const motor_ident_in_t* in, motor_ident_out_t* out);
+
+/** Copy result fields with bounded scalar stores; the caller owns synchronization. */
+void motor_ident_result_copy(volatile motor_ident_result_t* dst, const motor_ident_result_t* src);
 
 /** Abort a running identification, preserving all partial measurements. */
 void motor_ident_abort(motor_ident_t* ident, motor_ident_fail_t reason);

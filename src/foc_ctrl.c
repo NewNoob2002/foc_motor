@@ -103,7 +103,10 @@ static atomic_t ident_ready;
 static void ident_publish(void) {
     if (!st.ident_published && (st.ident.result.state == IDENT_DONE || st.ident.result.state == IDENT_FAILED)
         && atomic_get(&ident_ready) == 0) {
-        ident_result = st.ident.result;
+        /* Only the ISR owns this buffer while ready is zero. The atomic_set
+         * publishes every scalar store before the reader acquires ownership.
+         */
+        motor_ident_result_copy(&ident_result, &st.ident.result);
         st.ident_published = true;
         (void)atomic_set(&ident_ready, 1);
     }
@@ -135,6 +138,18 @@ void foc_ctrl_init(void) {
 /* Electrical angle in counts: mechanical position times the pole pairs, modulo one turn. */
 static uint32_t theta_e_count(uint32_t enc_count) {
     return ((enc_count % ENCODER_COUNTS_PER_REV) * POLE_PAIRS) % ENCODER_COUNTS_PER_REV;
+}
+
+/** Return constant-folded trig for the only two angles emitted by motor identification. */
+static foc_sincos_t ident_sincos(uint32_t e_count) {
+    foc_sincos_t sc;
+
+    /* Keep the original float32 angle expression, including cos(pi/2)'s small
+     * rounding residual. Constant arguments fold to loads in the ARM build.
+     */
+    sc.sin_theta = e_count == 0U ? 0.0f : sinf((float)IDENT_ALIGN_90 * RAD_PER_E_COUNT);
+    sc.cos_theta = e_count == 0U ? 1.0f : cosf((float)IDENT_ALIGN_90 * RAD_PER_E_COUNT);
+    return sc;
 }
 
 static int16_t to_ma(float amps) {
@@ -326,8 +341,12 @@ void foc_ctrl_step(const pwm_adc_sample_t* sample, pwm_adc_cmd_t* cmd) {
     float theta = (float)e_count * RAD_PER_E_COUNT;
     foc_sincos_t sc;
 
-    sc.sin_theta = sinf(theta);
-    sc.cos_theta = cosf(theta);
+    if (mode == FOC_MODE_IDENT) {
+        sc = ident_sincos(e_count);
+    } else {
+        sc.sin_theta = sinf(theta);
+        sc.cos_theta = cosf(theta);
+    }
 
     if (mode == FOC_MODE_CURRENT) {
         /* Only while the power stage is off (mode_allowed), so its PI voltages need no cap. */
@@ -340,20 +359,18 @@ void foc_ctrl_step(const pwm_adc_sample_t* sample, pwm_adc_cmd_t* cmd) {
     } else {
         out.i_dq = foc_park(foc_clarke(i_abc), sc);
         if (mode == FOC_MODE_IDENT) {
-            motor_ident_in_t ident_in = {
-                .i_d = out.i_dq.d,
-                .enc_count = sample->enc_count,
-                .power_on = sample->power_on && gout.power_on,
-            };
+            motor_ident_in_t ident_in;
             motor_ident_out_t ident_out;
+
+            ident_in.i_d = out.i_dq.d;
+            ident_in.enc_count = sample->enc_count;
+            ident_in.power_on = sample->power_on && gout.power_on;
 
             motor_ident_step(&st.ident, &ident_in, &ident_out);
             out.v_dq.d = ident_out.v_d;
             if (e_count != ident_out.theta_e_count) {
                 e_count = ident_out.theta_e_count;
-                theta = (float)e_count * RAD_PER_E_COUNT;
-                sc.sin_theta = sinf(theta);
-                sc.cos_theta = cosf(theta);
+                sc = ident_sincos(e_count);
             }
         }
         if (powered || gout.power_on) {
