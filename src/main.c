@@ -72,6 +72,7 @@ static const char* const mode_names[] = {
     [FOC_MODE_STEP] = "step (capture)",
     [FOC_MODE_VOLTAGE] = "voltage (stage 6, 1 V at the encoder angle)",
     [FOC_MODE_CURRENT] = "current loop (stage 6, placeholder gains)",
+    [FOC_MODE_IDENT] = "ident",
 };
 
 /* Thousandths, truncated toward zero; the inputs are a few units at most. */
@@ -121,6 +122,7 @@ static __noinline void report(uint32_t n, const pwm_adc_stats_t* st, bool timing
     LOG_INF("  mode %s, step %u; offsets IA %d.%03d IC %d.%03d counts", mode_names[fc->mode], fc->steps,
             milli(fc->ia_offset) / 1000, milli(fc->ia_offset) % 1000, milli(fc->ic_offset) / 1000,
             milli(fc->ic_offset) % 1000);
+    LOG_INF("  ident phase %u", (unsigned int)fc->ident_phase);
     LOG_INF("  i_d %d mA, i_q %d mA, v_d %d mV, v_q %d mV, SVPWM limited %d", milli(fc->i_d), milli(fc->i_q),
             milli(fc->v_d), milli(fc->v_q), fc->limited ? 1 : 0);
 }
@@ -147,6 +149,35 @@ static __noinline void dump_capture(const foc_ctrl_capture_t* c) {
     }
     LOG_INF("cap_end seq %u", c->seq);
     foc_ctrl_capture_release();
+}
+
+/** Scale identification diagnostics without undefined integer conversion for an ill-conditioned fit. */
+static int32_t ident_units(float value, float scale) {
+    float scaled = value * scale;
+
+    if (!(scaled > -2147483648.0f)) {
+        return INT32_MIN; /* Includes NaN; terminal diagnostics must remain printable. */
+    }
+    if (scaled >= 2147483648.0f) {
+        return INT32_MAX;
+    }
+    return (int32_t)scaled;
+}
+
+/** Print one terminal identification with explicit units, then release its ISR buffer. */
+static __noinline void dump_ident(const foc_ctrl_ident_t* r) {
+    LOG_INF("ident state %u, fail %u; enc90 %u enc0 %u delta %d counts, direction %d, offset %u counts",
+            (unsigned int)r->state, (unsigned int)r->fail_reason, r->enc_90, r->enc_0, r->delta_mech, r->direction,
+            r->offset_e);
+    k_msleep(CAPTURE_LINE_PAUSE_MS);
+    for (uint32_t k = 0U; k < IDENT_R_POINTS; k++) {
+        LOG_INF("ident R point %u: %d mV, %d mA", k, milli(r->points[k].v), milli(r->points[k].i));
+        k_msleep(CAPTURE_LINE_PAUSE_MS);
+    }
+    LOG_INF("ident R %d mOhm, V0 %d mV, residual %d mV, nonlinear %u; L %d uH, ipp %d mA", ident_units(r->r, 1000.0f),
+            ident_units(r->v0, 1000.0f), ident_units(r->max_residual, 1000.0f), r->r_nonlinear ? 1U : 0U,
+            ident_units(r->l, 1e6f), ident_units(r->ipp, 1000.0f));
+    foc_ctrl_ident_release();
 }
 
 /* Mechanical count, electrical angle (0..4095) and the three duties of one ISR step. */
@@ -213,6 +244,11 @@ static void report_loop(void* p1, void* p2, void* p3) {
 
         if (c != NULL) {
             dump_capture(c);
+        }
+        const foc_ctrl_ident_t* ident = foc_ctrl_ident_get();
+
+        if (ident != NULL) {
+            dump_ident(ident);
         }
     }
 }

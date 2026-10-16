@@ -21,6 +21,9 @@
  *   ramp), then zero again, recording IA and IC every period (inductance
  *   from the current rise). Amplitude and angle are latched at capture
  *   start; later command edits do not change the running capture.
+ * - FOC_MODE_IDENT: automatic encoder alignment, R and L measurement; requires
+ *   power already on. Ignores v_mv/theta_e, aborts on disarm, and publishes
+ *   one terminal result through foc_ctrl_ident_get()/release().
  * - FOC_MODE_VOLTAGE, FOC_MODE_CURRENT: the Stage 6 modes (1 V at the
  *   encoder angle; the current loop). Only while the power stage is off;
  *   with it on they run as FOC_MODE_IDLE (snapshot.mode_refused).
@@ -43,6 +46,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "motor_ident.h"
 #include "pwm_adc.h"
 
 /* 4096 periods at 20 kHz = 205 ms of zero-current samples. */
@@ -66,6 +70,7 @@ typedef enum {
     FOC_MODE_STEP = 2,
     FOC_MODE_VOLTAGE = 3,
     FOC_MODE_CURRENT = 4,
+    FOC_MODE_IDENT = 5,
 } foc_mode_t;
 
 typedef struct {
@@ -80,8 +85,9 @@ extern volatile foc_ctrl_cmd_t foc_ctrl_cmd;
 
 /* Latest values of the step, written only by the ISR. */
 typedef struct {
-    uint32_t steps; /* control steps after calibration */
-    uint32_t mode;  /* foc_mode_t that ran */
+    uint32_t steps;                  /* control steps after calibration */
+    uint32_t mode;                   /* foc_mode_t that ran */
+    motor_ident_phase_t ident_phase; /* automatic identification phase */
     bool calibrated;
     bool cal_failed;   /* plausibility rejection, sticky until reset */
     bool power_on;     /* power stage on during this step (BSP state) */
@@ -136,5 +142,14 @@ void foc_ctrl_snapshot(foc_ctrl_snapshot_t* out);
 const foc_ctrl_capture_t* foc_ctrl_capture_get(void);
 
 void foc_ctrl_capture_release(void);
+
+/** Terminal identification measurements, immutable until released by the thread. */
+typedef motor_ident_result_t foc_ctrl_ident_t;
+
+/** Return a finished identification, or NULL; thread context, no copying required. */
+const foc_ctrl_ident_t* foc_ctrl_ident_get(void);
+
+/** Return the finished identification buffer to the ISR after reporting it. */
+void foc_ctrl_ident_release(void);
 
 #endif /* FOC_MOTOR_FOC_CTRL_H */

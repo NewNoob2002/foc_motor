@@ -72,6 +72,8 @@ typedef struct {
     foc_mode_t mode;
     foc_current_t cc;
     power_guard_t guard;
+    motor_ident_t ident;
+    bool ident_published;
     float dc_v;          /* FOC_MODE_DC ramp state, V */
     uint32_t cap_idx;    /* next capture sample */
     uint32_t step_seen;  /* last cmd.step_seq acted on */
@@ -93,6 +95,20 @@ static atomic_t snap_seq;
 static foc_ctrl_capture_t cap;
 static atomic_t cap_state;
 
+/* The ISR writes only while ready is zero; the report thread releases ownership. */
+static foc_ctrl_ident_t ident_result;
+static atomic_t ident_ready;
+
+/** Publish a terminal result once, waiting for release of any older result. */
+static void ident_publish(void) {
+    if (!st.ident_published && (st.ident.result.state == IDENT_DONE || st.ident.result.state == IDENT_FAILED)
+        && atomic_get(&ident_ready) == 0) {
+        ident_result = st.ident.result;
+        st.ident_published = true;
+        (void)atomic_set(&ident_ready, 1);
+    }
+}
+
 static void pi_reset(void) {
     st.cc.pi_d.kp = CURRENT_KP;
     st.cc.pi_d.ki = CURRENT_KI;
@@ -113,6 +129,7 @@ void foc_ctrl_init(void) {
     power_guard_reset(&st.guard);
     snap = (foc_ctrl_snapshot_t){.duty_a = 0.5f, .duty_b = 0.5f, .duty_c = 0.5f};
     (void)atomic_set(&cap_state, CAPTURE_IDLE);
+    (void)atomic_set(&ident_ready, 0);
 }
 
 /* Electrical angle in counts: mechanical position times the pole pairs, modulo one turn. */
@@ -134,7 +151,7 @@ static int16_t to_ma(float amps) {
 
 /* Commanded mode, or FOC_MODE_IDLE if it is unknown or not allowed with the power stage on. */
 static foc_mode_t mode_allowed(uint32_t m, bool power, bool* refused) {
-    bool known = m <= (uint32_t)FOC_MODE_CURRENT;
+    bool known = m <= (uint32_t)FOC_MODE_IDENT;
     bool stage6 = m == (uint32_t)FOC_MODE_VOLTAGE || m == (uint32_t)FOC_MODE_CURRENT;
 
     *refused = !known || (power && stage6);
@@ -227,6 +244,14 @@ void foc_ctrl_step(const pwm_adc_sample_t* sample, pwm_adc_cmd_t* cmd) {
     }
 
     if (mode != st.mode) {
+        if (st.mode == FOC_MODE_IDENT) {
+            motor_ident_abort(&st.ident, IDENT_FAIL_CANCELLED);
+            ident_publish();
+        }
+        if (mode == FOC_MODE_IDENT) {
+            motor_ident_start(&st.ident);
+            st.ident_published = false;
+        }
         st.mode = mode;
         st.dc_v = 0.0f;
         pi_reset();
@@ -283,6 +308,10 @@ void foc_ctrl_step(const pwm_adc_sample_t* sample, pwm_adc_cmd_t* cmd) {
                 e_count = st.step_theta;
             }
             break;
+        case FOC_MODE_IDENT:
+            /* Park at the angle requested last period, before advancing the module. */
+            e_count = st.ident.theta_e_count;
+            break;
         case FOC_MODE_VOLTAGE:
             e_count = theta_e_count(sample->enc_count);
             out.v_dq.d = VOLTAGE_MODE_VD_V;
@@ -310,6 +339,23 @@ void foc_ctrl_step(const pwm_adc_sample_t* sample, pwm_adc_cmd_t* cmd) {
         foc_current_step(&st.cc, i_abc, sc, i_ref, vbus_duty, DT_S, &out);
     } else {
         out.i_dq = foc_park(foc_clarke(i_abc), sc);
+        if (mode == FOC_MODE_IDENT) {
+            motor_ident_in_t ident_in = {
+                .i_d = out.i_dq.d,
+                .enc_count = sample->enc_count,
+                .power_on = sample->power_on && gout.power_on,
+            };
+            motor_ident_out_t ident_out;
+
+            motor_ident_step(&st.ident, &ident_in, &ident_out);
+            out.v_dq.d = ident_out.v_d;
+            if (e_count != ident_out.theta_e_count) {
+                e_count = ident_out.theta_e_count;
+                theta = (float)e_count * RAD_PER_E_COUNT;
+                sc.sin_theta = sinf(theta);
+                sc.cos_theta = cosf(theta);
+            }
+        }
         if (powered || gout.power_on) {
             cap_vector(&out.v_dq, POWER_GUARD_V_MAX);
         }
@@ -326,8 +372,10 @@ void foc_ctrl_step(const pwm_adc_sample_t* sample, pwm_adc_cmd_t* cmd) {
         st.steps++;
     }
 
+    ident_publish();
     (void)atomic_inc(&snap_seq);
     snap.steps = st.steps;
+    snap.ident_phase = st.ident.result.state;
     snap.mode = (uint32_t)mode;
     snap.calibrated = calibrated;
     snap.cal_failed = st.cal_failed;
@@ -371,4 +419,14 @@ const foc_ctrl_capture_t* foc_ctrl_capture_get(void) {
 
 void foc_ctrl_capture_release(void) {
     (void)atomic_cas(&cap_state, CAPTURE_DONE, CAPTURE_IDLE);
+}
+
+/** Acquire the immutable ISR result after its atomic publication. */
+const foc_ctrl_ident_t* foc_ctrl_ident_get(void) {
+    return atomic_get(&ident_ready) != 0 ? &ident_result : NULL;
+}
+
+/** Release result ownership so a later run can publish its measurements. */
+void foc_ctrl_ident_release(void) {
+    (void)atomic_cas(&ident_ready, 1, 0);
 }

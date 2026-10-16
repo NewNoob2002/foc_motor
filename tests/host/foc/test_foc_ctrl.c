@@ -178,6 +178,120 @@ static void test_step_capture_latches_vector(void) {
     foc_ctrl_capture_release();
 }
 
+/** Mode 5 cannot run without power and publishes its failure exactly once until restarted. */
+static void test_ident_unpowered(void) {
+    (void)calibrate_codes(2047U, 2049U, 2047U, 2049U);
+    pwm_adc_sample_t sample = sample_at(15.0f);
+    pwm_adc_cmd_t cmd;
+    foc_ctrl_snapshot_t snap;
+
+    foc_ctrl_cmd.mode = FOC_MODE_IDENT;
+    foc_ctrl_cmd.v_mv = UINT32_MAX;
+    foc_ctrl_cmd.theta_e = 123U;
+    foc_ctrl_step(&sample, &cmd);
+    foc_ctrl_snapshot(&snap);
+    const foc_ctrl_ident_t* result = foc_ctrl_ident_get();
+
+    CHECK(!snap.mode_refused && snap.mode == FOC_MODE_IDENT);
+    CHECK(snap.ident_phase == IDENT_FAILED);
+    CHECK(cmd.a == 0.5f && cmd.b == 0.5f && cmd.c == 0.5f);
+    CHECK(result != NULL);
+    if (result != NULL) {
+        CHECK(result->fail_reason == IDENT_FAIL_NOT_POWERED);
+    }
+    foc_ctrl_ident_release();
+    foc_ctrl_step(&sample, &cmd);
+    CHECK(foc_ctrl_ident_get() == NULL);
+    foc_ctrl_cmd.mode = FOC_MODE_IDLE;
+    foc_ctrl_step(&sample, &cmd);
+    foc_ctrl_cmd.mode = FOC_MODE_IDENT;
+    foc_ctrl_step(&sample, &cmd);
+    CHECK(foc_ctrl_ident_get() != NULL);
+    foc_ctrl_ident_release();
+}
+
+/** Arm through explicit idle, then verify powered permission, disarm, and immutable result ownership. */
+static void test_ident_powered(void) {
+    (void)calibrate_codes(2047U, 2049U, 2047U, 2049U);
+    pwm_adc_sample_t sample = sample_at(15.0f);
+    pwm_adc_cmd_t cmd;
+    foc_ctrl_snapshot_t snap;
+
+    foc_ctrl_cmd.arm = FOC_CTRL_ARM_KEY;
+    for (uint32_t k = 0U; k < POWER_GUARD_VBUS_ARM_PERIODS; k++) {
+        foc_ctrl_step(&sample, &cmd);
+    }
+    CHECK(cmd.power_on);
+    sample.power_on = true;
+    /* Stage 6 modes remain refused while powered; 6 is still unknown. */
+    const uint32_t refused[] = {FOC_MODE_VOLTAGE, FOC_MODE_CURRENT, 6U, UINT32_MAX};
+
+    for (uint32_t k = 0U; k < sizeof(refused) / sizeof(refused[0]); k++) {
+        foc_ctrl_cmd.mode = refused[k];
+        foc_ctrl_step(&sample, &cmd);
+        foc_ctrl_snapshot(&snap);
+        CHECK(snap.mode_refused && snap.mode == FOC_MODE_IDLE);
+    }
+    foc_ctrl_cmd.mode = FOC_MODE_IDENT;
+    foc_ctrl_cmd.v_mv = 1000U;
+    foc_ctrl_cmd.theta_e = 3072U;
+    foc_ctrl_step(&sample, &cmd);
+    foc_ctrl_snapshot(&snap);
+    CHECK(!snap.mode_refused && snap.mode == FOC_MODE_IDENT);
+    CHECK(snap.ident_phase == IDENT_ALIGN_FIRST);
+    CHECK(snap.theta_e_count == IDENT_ALIGN_90 && snap.v_d > 0.0f && snap.v_d < 0.001f);
+    CHECK(cmd.power_on && foc_ctrl_ident_get() == NULL);
+    foc_ab_t vector = applied_vector(&cmd, snap.vbus);
+
+    CHECK(fabsf(vector.alpha) < 1e-5f && vector.beta > 0.0f);
+    foc_ctrl_cmd.arm = 0U;
+    foc_ctrl_step(&sample, &cmd);
+    const foc_ctrl_ident_t* result = foc_ctrl_ident_get();
+
+    CHECK(result != NULL && !cmd.power_on);
+    if (result != NULL) {
+        CHECK(result->fail_reason == IDENT_FAIL_NOT_POWERED);
+        foc_ctrl_ident_t saved = *result;
+
+        /* A new run must not modify the buffer still owned by the report thread. */
+        foc_ctrl_cmd.mode = FOC_MODE_IDLE;
+        sample.power_on = false;
+        foc_ctrl_step(&sample, &cmd);
+        foc_ctrl_cmd.mode = FOC_MODE_IDENT;
+        foc_ctrl_step(&sample, &cmd);
+        CHECK(result->state == saved.state && result->fail_reason == saved.fail_reason);
+        foc_ctrl_ident_release();
+        foc_ctrl_step(&sample, &cmd);
+        CHECK(foc_ctrl_ident_get() != NULL);
+        foc_ctrl_ident_release();
+    }
+}
+
+/** Leaving identification aborts excitation and publishes a cancellation result. */
+static void test_ident_mode_exit(void) {
+    (void)calibrate_codes(2047U, 2049U, 2047U, 2049U);
+    pwm_adc_sample_t sample = sample_at(15.0f);
+    pwm_adc_cmd_t cmd;
+
+    foc_ctrl_cmd.arm = FOC_CTRL_ARM_KEY;
+    for (uint32_t k = 0U; k < POWER_GUARD_VBUS_ARM_PERIODS; k++) {
+        foc_ctrl_step(&sample, &cmd);
+    }
+    sample.power_on = true;
+    foc_ctrl_cmd.mode = FOC_MODE_IDENT;
+    foc_ctrl_step(&sample, &cmd);
+    foc_ctrl_cmd.mode = FOC_MODE_IDLE;
+    foc_ctrl_step(&sample, &cmd);
+    const foc_ctrl_ident_t* result = foc_ctrl_ident_get();
+
+    CHECK(result != NULL);
+    if (result != NULL) {
+        CHECK(result->fail_reason == IDENT_FAIL_CANCELLED);
+    }
+    CHECK(cmd.a == 0.5f && cmd.b == 0.5f && cmd.c == 0.5f);
+    foc_ctrl_ident_release();
+}
+
 /* Run production-control regressions with board constants and C11 atomics supplied by host stubs. */
 int main(void) {
     test_calibration_acceptance_boundaries();
@@ -185,5 +299,8 @@ int main(void) {
     test_unknown_mode_cannot_arm();
     test_duty_scale_uses_raw_vbus();
     test_step_capture_latches_vector();
+    test_ident_unpowered();
+    test_ident_powered();
+    test_ident_mode_exit();
     return foc_test_result("test_foc_ctrl");
 }
