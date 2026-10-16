@@ -203,9 +203,23 @@ void motor_ident_step(motor_ident_t* m, const motor_ident_in_t* in, motor_ident_
 
     if (!isfinite(in->i_d)) {
         motor_ident_abort(m, IDENT_FAIL_NUMERIC);
-    } else if (fabsf(in->i_d) > IDENT_I_ABORT_A) {
-        motor_ident_abort(m, IDENT_FAIL_OVERCURRENT);
-    } else if (!in->power_on) {
+    } else {
+        /* Single-sample protection stays with power_guard's global 2 A per-phase ISR trip
+         * (about 5 sigma above 1.5 A). This limit only stops a slow runaway of our own
+         * servo, so isolated ADC noise spikes must not abort identification.
+         */
+        if (fabsf(in->i_d) > IDENT_I_ABORT_A) {
+            if (m->overcurrent_n < IDENT_I_ABORT_N) {
+                m->overcurrent_n++;
+            }
+            if (m->overcurrent_n >= IDENT_I_ABORT_N) {
+                motor_ident_abort(m, IDENT_FAIL_OVERCURRENT);
+            }
+        } else {
+            m->overcurrent_n = 0U;
+        }
+    }
+    if (!in->power_on) {
         motor_ident_abort(m, IDENT_FAIL_NOT_POWERED);
     }
     if (m->result.state > IDENT_IDLE && m->result.state < IDENT_DONE) {

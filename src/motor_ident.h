@@ -28,7 +28,8 @@
 #define IDENT_L_IPP_MAX_A     0.8f  /* A, peak-to-peak */
 #define IDENT_SERVO_KI        5.0f  /* V/(A s) */
 #define IDENT_V_MAX           0.9f  /* V, servo clamp */
-#define IDENT_I_ABORT_A       1.8f  /* A, instantaneous d-axis abort */
+#define IDENT_I_ABORT_A       1.8f  /* A, slow servo runaway threshold */
+#define IDENT_I_ABORT_N       4U    /* consecutive PWM periods (200 us) above IDENT_I_ABORT_A */
 #define IDENT_SERVO_TIMEOUT_S 1.0f  /* s per target */
 #define IDENT_REACHED_FRAC    0.05f
 #define IDENT_REACHED_S       0.02f /* s continuously within the band */
@@ -103,6 +104,7 @@ typedef struct {
     motor_ident_result_t result;
     uint32_t theta_e_count;
     uint32_t run_n;
+    uint32_t overcurrent_n; /* consecutive samples above IDENT_I_ABORT_A */
     uint32_t target_n;
     uint32_t reached_n;
     uint32_t hold_n;

@@ -6,7 +6,7 @@ This change implements `FOC_MODE_IDENT = 5`: 90-degree alignment, current decay 
 
 `motor_ident_step()` owns fixed storage and takes one sample per 50 us PWM period. The current passed by control is Park-transformed at the angle requested on the previous call. The output voltage of call k starts at counter top k+1, so the increment i[k+2]-i[k+1] belongs to output k. Injection keeps the last two samples for its final increments, then returns zero. DONE and FAILED remain latched until the next mode-entry restart.
 
-The servo uses Ki = 5 V/(A s), 0..0.9 V saturation, a 5 ms current filter, a continuous 20 ms arrival band, and a 1 s arrival timeout for every target. A 10 s absolute timeout also bounds the whole run. A d-axis sample above 1.8 A, nonfinite current, disarm or loss of power aborts with zero voltage. The unchanged phase-current guard remains the separate 2 A protection. Leaving IDENT aborts with CANCELLED; results retain completed measurements.
+The servo uses Ki = 5 V/(A s), 0..0.9 V saturation, a 5 ms current filter, a continuous 20 ms arrival band, and a 1 s arrival timeout for every target. A 10 s absolute timeout also bounds the whole run. Four consecutive d-axis samples with |i_d| > 1.8 A (200 us) abort with zero voltage on the fourth step; any sample at or below the threshold resets the counter. Nonfinite current, disarm or loss of power still aborts immediately. Single-sample protection remains with the unchanged global 2 A per-phase ISR trip in `power_guard` (about 5 sigma above 1.5 A at SD 0.1 A); the identification limit only stops a slow runaway of its own servo without reacting to isolated ADC noise spikes. Leaving IDENT aborts with CANCELLED; results retain completed measurements.
 
 Terminal results use a separate fixed buffer and atomic get/release handoff. A new run can restart on a mode edge without modifying a result held by the report thread. If a completed run is waiting behind an older unread result, it publishes after release; repeated further mode-edge restarts can supersede that unpublished run, since this is a single-result interface rather than a queue.
 
@@ -18,8 +18,64 @@ Normal servo/injection steps use roughly 8–15 single-precision arithmetic oper
 - The L injection begins only after restoring and settling the current to 1 A with the servo. Starting directly from the final 1.5 A R point caused the specified 100 uH plant to exceed the 1.8 A abort threshold on its first positive pulses, as shown by the initial host run. The additional `IDENT_L_BIAS` phase prevents that transient; the frozen injection bias still comes from the recorded 1 A R point.
 - The fit always uses the four nominal targets at or above 0.75 A. Selecting by noisy measured averages could drop the 0.75 A point and conflict with the specified four-point fit. All five measured points remain in the result.
 - Reverse encoder offsets follow `theta_e = (direction * enc * 7 - offset_e) mod 4096`; this reduces to the specified `(enc0 * 7) mod 4096` for positive direction. Both raw TIM3 readings are preserved; wrapping is used only for displacement and offset arithmetic.
-- ADC noise is fixed-seed uniform noise of SD 0.1 A followed by 16 mA quantization. The specification gives an SD but does not require Gaussian noise. The plant uses exact exponential RL propagation per period with inverter loss evaluated at the initial current of that period.
+- ADC noise is fixed-seed approximately Gaussian noise: the sum of 12 independent uniforms in [-0.5, 0.5], scaled by 0.1 A, then quantized to 16 mA. Its pre-quantization SD is 0.1 A, with tails beyond 3 sigma; the previous single uniform was bounded below the 1.8 A threshold at the 1.5 A target. The plant uses exact exponential RL propagation per period with inverter loss evaluated at the initial current of that period.
 - The referenced `/home/gtc/.pi/agent/references/embedded-development.md` was absent. Repository AGENTS.md and the existing firmware interfaces were inspected instead.
+
+## Consecutive-overcurrent fix verification
+
+Executed against the revised abort rule and noise model:
+
+```sh
+cmake -S tests/host/foc -B build/host-fix && cmake --build build/host-fix && ctest --test-dir build/host-fix --output-on-failure
+build/host-fix/test_motor_ident
+source /home/gtc/zephyrproject/.venv/bin/activate
+ZEPHYR_BASE=/home/gtc/zephyrproject/zephyr west build -p always -b foc_motor -d build/arm-fix . -- -DBUILD_VERSION=v4.4.2
+clang-format --dry-run --Werror src/motor_ident.c src/motor_ident.h tests/host/foc/test_motor_ident.c
+clang-tidy -p build/host-fix src/motor_ident.c tests/host/foc/test_motor_ident.c
+git diff --check
+```
+
+Host tail (warnings-as-errors, ASan/UBSan; R 5% and L 10% tolerances unchanged):
+
+```text
+    Start 6: test_motor_ident
+6/7 Test #6: test_motor_ident .................   Passed    0.09 sec
+    Start 7: vec_compare_selftest
+7/7 Test #7: vec_compare_selftest .............   Passed    0.00 sec
+
+100% tests passed, 0 tests failed out of 7
+
+Total Test time (real) =   0.19 sec
+```
+
+Accuracy output:
+
+```text
+R 0.100 L 100 uH dir -1: state 7 reason 0, R 0.102429 L 100.867 uH, ipp 0.397 A, 4.428 s
+R 0.200 L 300 uH dir -1: state 7 reason 0, R 0.202654 L 302.507 uH, ipp 0.132 A, 4.798 s
+R 0.100 L 100 uH dir 1: state 7 reason 0, R 0.102429 L 100.867 uH, ipp 0.397 A, 4.428 s
+R 0.200 L 300 uH dir 1: state 7 reason 0, R 0.202654 L 302.507 uH, ipp 0.132 A, 4.798 s
+test_motor_ident: all checks passed
+```
+
+New plant cases repeatedly inject isolated 1.9 A samples or three-sample bursts during R and require the complete run to succeed. A four-sample burst must abort on its fourth sample with OVERCURRENT and zero voltage. Additional checks cover both current signs, resets at exactly 1.8 A and at zero, counter reset on restart, and immediate NaN failure during a burst.
+
+ARM tail:
+
+```text
+[183/183] Linking C executable zephyr/zephyr.elf
+Memory region         Used Size  Region Size  %age Used
+           FLASH:       70096 B       128 KB     53.48%
+             RAM:       10624 B        32 KB     32.42%
+           SRAM0:           0 B        32 KB      0.00%
+        IDT_LIST:           0 B        32 KB      0.00%
+```
+
+Format and whitespace checks exit 0 without diagnostics. clang-tidy uses the host compilation database and repository policy, exits 0 with four suppressed non-user-code warnings and no first-party diagnostics. No hardware was accessed; target timing and HIL remain unverified.
+
+## Original implementation verification
+
+The following sections retain the original implementation's build and uniform-noise results; the fix verification above supersedes them for the revised code.
 
 ## Host verification
 

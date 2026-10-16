@@ -18,12 +18,20 @@ typedef struct {
     double i0;
     bool stuck;
     bool noisy;
+    uint32_t spike_burst;
+    uint32_t spikes;
 } plant_t;
 
-/** Quantize a noisy ADC observation; bounded uniform noise has SD exactly 0.1 A before quantization. */
+/** Quantize an ADC observation with approximately Gaussian noise of SD 0.1 A and tails beyond 3 sigma. */
 static float current_sample(plant_t* p) {
-    double noise = p->noisy ? (double)foc_test_rand(&p->rng, -0.17320508f, 0.17320508f) : 0.0;
+    double noise = 0.0;
 
+    if (p->noisy) {
+        for (uint32_t k = 0U; k < 12U; k++) {
+            noise += (double)foc_test_rand(&p->rng, -0.5f, 0.5f);
+        }
+        noise *= 0.1;
+    }
     return p->noisy ? (float)(round((p->i + noise) / 0.016) * 0.016) : (float)p->i;
 }
 
@@ -48,6 +56,7 @@ static void plant_step(plant_t* p, float voltage) {
 static motor_ident_t run_plant(plant_t* p) {
     motor_ident_t m;
     motor_ident_out_t out;
+    uint32_t r_n = 0U;
 
     motor_ident_start(&m);
     for (uint32_t k = 0U; k < 200002U; k++) {
@@ -57,6 +66,13 @@ static motor_ident_t run_plant(plant_t* p) {
             .power_on = true,
         };
 
+        if (m.result.state == IDENT_RESISTANCE && p->spike_burst > 0U) {
+            if (r_n % 2000U < p->spike_burst) {
+                in.i_d = 1.9f;
+                p->spikes++;
+            }
+            r_n++;
+        }
         motor_ident_step(&m, &in, &out);
         CHECK(isfinite(out.v_d) && fabsf(out.v_d) <= 1.0f);
         if (out.done || out.failed) {
@@ -150,9 +166,65 @@ static void test_delay_association(void) {
     CHECK_NEAR(wrong_three / (double)m.sum_delta, 0.5, 1e-4);
 }
 
+/** Tolerate repeated short R-phase spike bursts, but stop on the fourth consecutive spike. */
+static void test_r_spikes(void) {
+    const uint32_t bursts[] = {1U, IDENT_I_ABORT_N - 1U, IDENT_I_ABORT_N};
+
+    for (uint32_t k = 0U; k < sizeof(bursts) / sizeof(bursts[0]); k++) {
+        plant_t p = {.r = 0.1, .l = 100e-6, .vdt = 0.15, .direction = 1, .enc0 = 3745U, .spike_burst = bursts[k]};
+        motor_ident_t m = run_plant(&p);
+
+        if (bursts[k] < IDENT_I_ABORT_N) {
+            CHECK(m.result.state == IDENT_DONE && m.result.fail_reason == IDENT_FAIL_NONE);
+            CHECK(p.spikes > bursts[k]);
+        } else {
+            CHECK(m.result.state == IDENT_FAILED && m.result.fail_reason == IDENT_FAIL_OVERCURRENT);
+            CHECK(p.spikes == IDENT_I_ABORT_N);
+        }
+    }
+}
+
+/** Check both current signs, threshold resets, restart, and immediate numeric failure during a burst. */
+static void test_overcurrent(void) {
+    motor_ident_t m;
+    motor_ident_out_t out;
+    motor_ident_in_t in = {.power_on = true};
+
+    for (int sign = -1; sign <= 1; sign += 2) {
+        motor_ident_start(&m);
+        CHECK(m.overcurrent_n == 0U);
+        for (uint32_t burst = 0U; burst < 3U; burst++) {
+            in.i_d = (float)sign * 1.9f;
+            for (uint32_t k = 1U; k < IDENT_I_ABORT_N; k++) {
+                motor_ident_step(&m, &in, &out);
+                CHECK(!out.failed && m.overcurrent_n == k);
+            }
+            if (burst == 0U) {
+                in.i_d = (float)sign * IDENT_I_ABORT_A;
+                motor_ident_step(&m, &in, &out);
+                CHECK(!out.failed && m.overcurrent_n == 0U);
+            } else if (burst == 1U) {
+                in.i_d = 0.0f;
+                motor_ident_step(&m, &in, &out);
+                CHECK(!out.failed && m.overcurrent_n == 0U);
+            } else {
+                motor_ident_step(&m, &in, &out);
+                CHECK(out.failed && out.v_d == 0.0f && m.result.fail_reason == IDENT_FAIL_OVERCURRENT);
+            }
+        }
+        motor_ident_start(&m);
+        CHECK(m.overcurrent_n == 0U);
+        motor_ident_step(&m, &in, &out);
+        CHECK(!out.failed);
+        in.i_d = NAN;
+        motor_ident_step(&m, &in, &out);
+        CHECK(out.failed && out.v_d == 0.0f && m.result.fail_reason == IDENT_FAIL_NUMERIC);
+    }
+}
+
 /** Check immediate zero output, latched failures, restart, and the absolute run bound. */
 static void test_safety(void) {
-    const float invalid[] = {NAN, INFINITY, -INFINITY, 1.801f, -1.801f};
+    const float invalid[] = {NAN, INFINITY, -INFINITY};
     motor_ident_t m;
     motor_ident_out_t out;
     motor_ident_in_t in = {.power_on = true};
@@ -162,7 +234,7 @@ static void test_safety(void) {
         in.i_d = invalid[k];
         motor_ident_step(&m, &in, &out);
         CHECK(out.failed && out.v_d == 0.0f);
-        CHECK(m.result.fail_reason == (k < 3U ? IDENT_FAIL_NUMERIC : IDENT_FAIL_OVERCURRENT));
+        CHECK(m.result.fail_reason == IDENT_FAIL_NUMERIC);
         in.i_d = 0.0f;
         motor_ident_step(&m, &in, &out);
         CHECK(out.failed && out.v_d == 0.0f);
@@ -231,6 +303,8 @@ int main(void) {
     }
     test_unreachable(5.0, 1e-3, 1);
     test_delay_association();
+    test_r_spikes();
+    test_overcurrent();
     test_safety();
     test_stuck_encoder();
     test_l_failures();
