@@ -5,46 +5,53 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#define IDENT_PERIOD_S        50e-6f /* s, exactly one PWM period */
-#define IDENT_COUNTS          4096U  /* encoder/electrical counts per revolution */
-#define IDENT_POLE_PAIRS      7U
+#define IDENT_PERIOD_S         50e-6f /* s, exactly one PWM period */
+#define IDENT_COUNTS           4096U  /* encoder/electrical counts per revolution */
+#define IDENT_POLE_PAIRS       7U
 /* Round k * 4096/3 to the nearest count: 0, 1365, 2731, then 4096 == 0. */
-#define IDENT_ALIGN_120       1365U  /* electrical counts */
-#define IDENT_ALIGN_240       2731U  /* electrical counts */
-#define IDENT_ALIGN_A         1.0f   /* A */
-#define IDENT_ALIGN_HOLD_N    10000U /* PWM periods, 0.5 s after reaching the target */
-#define IDENT_ALIGN_TOL_E     200    /* electrical counts */
-#define IDENT_R_POINTS        5U
-#define IDENT_R_TARGETS_A     {0.5f, 0.75f, 1.0f, 1.25f, 1.5f} /* A */
-#define IDENT_R_FIT_FIRST     1U                               /* omit the nonlinear 0.5 A point */
-#define IDENT_R_BIAS_POINT    2U                               /* 1.0 A point */
-#define IDENT_R_SETTLE_N      4000U                            /* PWM periods, 0.2 s after reaching each target */
-#define IDENT_R_AVG_N         2000U                            /* PWM periods */
-#define IDENT_R_RESIDUAL_FRAC 0.05f
-#define IDENT_R_SLOPE_FRAC    0.20f
-#define IDENT_R_TOP_A         1.5f   /* A */
-#define IDENT_L_VH            0.2f   /* V, square-wave amplitude */
-#define IDENT_L_HALF          4U     /* PWM periods per half cycle */
-#define IDENT_L_CYCLES        2500U  /* square cycles */
-#define IDENT_L_DISCARD       50U    /* initial square cycles */
-#define IDENT_L_IPP_MAX_A     0.8f   /* A, peak-to-peak */
-#define IDENT_SERVO_KI        5.0f   /* V/(A s) */
-#define IDENT_V_MAX           0.9f   /* V, servo clamp */
-#define IDENT_I_ABORT_A       1.8f   /* A, slow servo runaway threshold */
-#define IDENT_I_ABORT_N       4U     /* consecutive PWM periods (200 us) above IDENT_I_ABORT_A */
-#define IDENT_SERVO_TIMEOUT_N 20000U /* PWM periods, 1 s per target */
-#define IDENT_REACHED_FRAC    0.05f
-#define IDENT_REACHED_N       400U  /* PWM periods, 0.02 s continuously within the band */
-#define IDENT_FILTER_K        0.01f /* dimensionless; tau about 5 ms */
-#define IDENT_ZERO_BAND_A     0.05f /* A, decay before switching angle */
-#define IDENT_ROT_RATE        2048  /* electrical counts/s, exact Q16 integration */
-#define IDENT_ROT_TURNS       2U
-#define IDENT_ROT_DIRECTION_N (IDENT_ROT_TURNS * IDENT_COUNTS * 20000U / (uint32_t)IDENT_ROT_RATE)
-#define IDENT_ROT_SETTLE_N    (IDENT_COUNTS * 20000U / (4U * (uint32_t)IDENT_ROT_RATE))
+#define IDENT_ALIGN_120        1365U  /* electrical counts */
+#define IDENT_ALIGN_240        2731U  /* electrical counts */
+#define IDENT_ALIGN_A          1.5f   /* A */
+#define IDENT_ALIGN_HOLD_N     10000U /* PWM periods, 0.5 s after reaching the target */
+/* 12 slots / 14 poles give 84 detents/turn, spaced 30 electrical degrees.
+ * Bench moves reached 148 and 76 degrees: allow individual detent errors
+ * (about 67..173 degrees), but require 205..275 degrees total to reject
+ * half travel. Rotation averaging later removes the rough park offset.
+ */
+#define IDENT_ALIGN_MOVE_TOL_E 600 /* electrical counts, around 1365 per move */
+#define IDENT_ALIGN_SUM_TOL_E  400 /* electrical counts, around 2730 total */
+#define IDENT_R_POINTS         5U
+#define IDENT_R_TARGETS_A      {0.5f, 0.75f, 1.0f, 1.25f, 1.5f} /* A */
+#define IDENT_R_FIT_FIRST      1U                               /* omit the nonlinear 0.5 A point */
+#define IDENT_R_BIAS_POINT     2U                               /* 1.0 A point */
+#define IDENT_R_SETTLE_N       4000U                            /* PWM periods, 0.2 s after reaching each target */
+#define IDENT_R_AVG_N          2000U                            /* PWM periods */
+#define IDENT_R_RESIDUAL_FRAC  0.05f
+#define IDENT_R_SLOPE_FRAC     0.20f
+#define IDENT_R_TOP_A          1.5f   /* A */
+#define IDENT_L_BIAS_A         1.0f   /* A, independent of the stiffer alignment field */
+#define IDENT_L_VH             0.2f   /* V, square-wave amplitude */
+#define IDENT_L_HALF           4U     /* PWM periods per half cycle */
+#define IDENT_L_CYCLES         2500U  /* square cycles */
+#define IDENT_L_DISCARD        50U    /* initial square cycles */
+#define IDENT_L_IPP_MAX_A      0.8f   /* A, peak-to-peak */
+#define IDENT_SERVO_KI         5.0f   /* V/(A s) */
+#define IDENT_V_MAX            0.9f   /* V, servo clamp */
+#define IDENT_I_ABORT_A        1.8f   /* A, slow servo runaway threshold */
+#define IDENT_I_ABORT_N        4U     /* consecutive PWM periods (200 us) above IDENT_I_ABORT_A */
+#define IDENT_SERVO_TIMEOUT_N  20000U /* PWM periods, 1 s per target */
+#define IDENT_REACHED_FRAC     0.05f
+#define IDENT_REACHED_N        400U  /* PWM periods, 0.02 s continuously within the band */
+#define IDENT_FILTER_K         0.01f /* dimensionless; tau about 5 ms */
+#define IDENT_ZERO_BAND_A      0.05f /* A, decay before switching angle */
+#define IDENT_ROT_RATE         2048  /* electrical counts/s, exact Q16 integration */
+#define IDENT_ROT_TURNS        2U
+#define IDENT_ROT_DIRECTION_N  (IDENT_ROT_TURNS * IDENT_COUNTS * 20000U / (uint32_t)IDENT_ROT_RATE)
+#define IDENT_ROT_SETTLE_N     (IDENT_COUNTS * 20000U / (4U * (uint32_t)IDENT_ROT_RATE))
 /* Original phase maxima <454002 periods plus 160000 rotation periods = <614002.
  * Rotation takes 8 s: two turns per direction at 0.5 electrical turns/s.
  */
-#define IDENT_RUN_TIMEOUT_N   620000U /* PWM periods, 31 s */
+#define IDENT_RUN_TIMEOUT_N    620000U /* PWM periods, 31 s */
 
 /** Identification phases; terminal states remain latched until start. */
 typedef enum {

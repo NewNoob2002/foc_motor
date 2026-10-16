@@ -256,9 +256,10 @@ static void test_ident_powered(void) {
         if (angle != 0U) {
             for (uint32_t k = 0U; k < IDENT_ALIGN_HOLD_N + 2U * IDENT_REACHED_N + 2000U; k++) {
                 float theta = (float)angles[angle - 1U] * 0.0015339808f;
-                float ia = snap.ident_phase == IDENT_ALIGN_DECAY ? 0.0f : cosf(theta);
-                float ic =
-                    snap.ident_phase == IDENT_ALIGN_DECAY ? 0.0f : -0.5f * cosf(theta) - 0.8660254f * sinf(theta);
+                float ia = snap.ident_phase == IDENT_ALIGN_DECAY ? 0.0f : IDENT_ALIGN_A * cosf(theta);
+                float ic = snap.ident_phase == IDENT_ALIGN_DECAY
+                               ? 0.0f
+                               : IDENT_ALIGN_A * (-0.5f * cosf(theta) - 0.8660254f * sinf(theta));
 
                 sample.ia_code = (uint16_t)lroundf(2048.0f + ia / ANALOG_PHASE_A_PER_CODE);
                 sample.ic_code = (uint16_t)lroundf(2048.0f + ic / ANALOG_PHASE_A_PER_CODE);

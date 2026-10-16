@@ -159,12 +159,16 @@ static void align_result(motor_ident_t* m, uint32_t enc) {
     float move_a = (float)IDENT_POLE_PAIRS * fabsf((float)r->delta_a);
     float move_b = (float)IDENT_POLE_PAIRS * fabsf((float)r->delta_b);
 
+    float move_sum = (float)IDENT_POLE_PAIRS * fabsf((float)(r->delta_a + r->delta_b));
+
     /* Both ideal moves round to 1365 counts; the first command gap is 1366.
-     * The one-count rounding difference is included in the electrical tolerance.
+     * The wider per-move band admits cogging, while the sum rejects a rotor
+     * that travels only halfway even if each individual move is plausible.
      */
     if (r->delta_a == 0 || r->delta_b == 0 || (r->delta_a > 0) != (r->delta_b > 0)
-        || fabsf(move_a - (float)IDENT_ALIGN_120) > (float)IDENT_ALIGN_TOL_E
-        || fabsf(move_b - (float)IDENT_ALIGN_120) > (float)IDENT_ALIGN_TOL_E) {
+        || fabsf(move_a - (float)IDENT_ALIGN_120) > (float)IDENT_ALIGN_MOVE_TOL_E
+        || fabsf(move_b - (float)IDENT_ALIGN_120) > (float)IDENT_ALIGN_MOVE_TOL_E
+        || fabsf(move_sum - 2.0f * (float)IDENT_ALIGN_120) > (float)IDENT_ALIGN_SUM_TOL_E) {
         motor_ident_abort(m, IDENT_FAIL_ALIGNMENT);
         return;
     }
@@ -182,9 +186,9 @@ static void align_two_sided(motor_ident_t* m, uint32_t enc) {
     r->enc_zero_back = enc;
     if (forward * r->direction <= 0 || backward * r->direction >= 0
         || fabsf(fabsf((float)(forward * (int32_t)IDENT_POLE_PAIRS)) - (float)IDENT_ALIGN_120)
-               > (float)IDENT_ALIGN_TOL_E
+               > (float)IDENT_ALIGN_MOVE_TOL_E
         || fabsf(fabsf((float)(backward * (int32_t)IDENT_POLE_PAIRS)) - (float)IDENT_ALIGN_120)
-               > (float)IDENT_ALIGN_TOL_E) {
+               > (float)IDENT_ALIGN_MOVE_TOL_E) {
         motor_ident_abort(m, IDENT_FAIL_ALIGNMENT);
         return;
     }
@@ -357,7 +361,10 @@ static float offset_rotation_step(motor_ident_t* m, uint32_t enc) {
              */
             r->offset_c = (m->rot_sum_f + m->rot_sum_b) / (2 * samples);
             r->offset_load = (m->rot_sum_f - m->rot_sum_b) / (2 * samples);
-            if (r->offset_c > 400 || r->offset_c < -400 || r->offset_load < 0 || r->offset_load > 600) {
+            /* Cogging can leave the rough two-sided park about 50 degrees off.
+             * Keep the per-sample slip and rotation load-angle bounds unchanged.
+             */
+            if (r->offset_c > 600 || r->offset_c < -600 || r->offset_load < 0 || r->offset_load > 600) {
                 motor_ident_abort(m, IDENT_FAIL_ALIGNMENT);
                 return 0.0f;
             }
@@ -478,7 +485,7 @@ void motor_ident_step(motor_ident_t* m, const motor_ident_in_t* in, motor_ident_
              * injection, otherwise the first pulse can cross the abort limit.
              * Freeze at the recorded R voltage only after the bias has settled.
              */
-            servo(m, in->i_d, IDENT_ALIGN_A);
+            servo(m, in->i_d, IDENT_L_BIAS_A);
             if (m->reached && ++m->hold_n >= IDENT_R_SETTLE_N) {
                 next_target(m, IDENT_INDUCTANCE);
             }

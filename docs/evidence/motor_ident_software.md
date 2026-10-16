@@ -1,5 +1,47 @@
 # Motor identification: software verification
 
+## Cogging-tolerant alignment (2026-10-15)
+
+This section supersedes the alignment limits and timing described in the historical verification below. Bench firmware `eeaddaf` failed twice at raw counts 61401, 61160, 61036: mechanical deltas -241/-124, or about 148/76 electrical degrees. With 12 slots / 14 poles, the 84 cogging detents are spaced 30 electrical degrees apart. Alignment only establishes direction and a rough park offset; `IDENT_OFFSET_ROT` subsequently removes the park bias.
+
+Alignment now uses **1.5 A**. Every forced move (120→240, 240→360, 360→120 forward, 120→0 backward) must retain its expected sign and satisfy `abs(7 * abs(delta) - 1365) <= 600`. The first two must additionally satisfy `abs(7 * abs(delta_a + delta_b) - 2730) <= 400`. The wider individual band admits unequal detent landings; the total-travel band rejects insufficient or excessive travel even when individual magnitudes pass. Rotation permits `abs(c) <= 600`, retaining the 1024-count per-sample slip limit and 0..600 load-angle band. The 1.8 A/four-sample abort, global 2 A trip, servo clamp, per-target timeout and 31 s overall timeout are unchanged. `IDENT_L_BIAS_A` keeps the pre-injection target at **1 A**, independently of alignment current.
+
+Host tests retain all existing R/L and offset accuracy bounds, including the original 200-count move checks for ordinary plants. New cases cover the exact bench deltas in both polarities, earlier successful bench deltas, individual and combined tolerance edges, no motion, half travel (~120 degrees total), and the relaxed correction boundaries. The full torque/stiction plant adds an 84-detent sinusoidal term plus a zero-mean lower spatial harmonic to produce unequal parks. It integrates torque throughout alignment and rotation; it never inserts encoder errors or assigns the rotor to target positions. This regression plant approximates the bench pattern, rather than identifying the physical motor's cogging waveform.
+
+Executed:
+
+```sh
+cmake -S tests/host/foc -B build/host-al2 && cmake --build build/host-al2 && ctest --test-dir build/host-al2 --output-on-failure
+build/host-al2/test_motor_ident
+source /home/gtc/zephyrproject/.venv/bin/activate
+ZEPHYR_BASE=/home/gtc/zephyrproject/zephyr west build -p always -b foc_motor -d build/arm-al2 . -- -DBUILD_VERSION=v4.4.2
+/home/gtc/zephyr-sdk-1.0.1/arm-zephyr-eabi/bin/arm-zephyr-eabi-size -A build/arm-al2/zephyr/zephyr.elf
+/home/gtc/zephyr-sdk-1.0.1/arm-zephyr-eabi/bin/arm-zephyr-eabi-nm build/arm-al2/zephyr/zephyr.elf | grep foc_ctrl_cmd
+clang-format --dry-run --Werror src/motor_ident.c src/motor_ident.h tests/host/foc/test_motor_ident.c tests/host/foc/test_foc_ctrl.c
+clang-tidy -p build/host-al2 src/motor_ident.c tests/host/foc/test_motor_ident.c tests/host/foc/test_foc_ctrl.c
+git diff --check
+```
+
+Observed tails:
+
+```text
+8/9 Test #8: test_motor_ident .................   Passed    1.47 sec
+9/9 Test #9: vec_compare_selftest .............   Passed    0.01 sec
+100% tests passed, 0 tests failed out of 9
+Total Test time (real) =   2.28 sec
+strong cogging dir -1: deltas -234 -124 (144.0, 76.3 deg), offset error 14.0 counts, 14.955 s
+strong cogging dir 1: deltas 234 124 (144.0, 76.3 deg), offset error 14.0 counts, 14.955 s
+test_motor_ident: all checks passed
+[187/187] Linking C executable zephyr/zephyr.elf
+FLASH: 77264 B / 128 KB; RAM: 11392 B / 22 KB; CCM: 9112 B / 10 KB
+budgets: flash 77260/98304 B; SRAM data+bss 11340/22528 B; CCM 9112/10240 B
+200015a8 B foc_ctrl_cmd
+```
+
+The host suite runs with warnings-as-errors and ASan/UBSan. Both strong-cogging runs finish with the correct direction and <30-count refined offset error; ordinary noisy plants also reach 1.5 A and finish within the existing bound. Format and whitespace checks pass; clang-tidy exits 0 with seven suppressed non-user-code warnings and no first-party diagnostics. All CI artifact/resource, allocation, GPIO-default and configuration gates pass. ARM object disassembly shows only module-internal call relocations (`motor_ident_abort`, `servo`, `align_delta`), with no library calls or byte-loop memory functions. No hardware was accessed or flashed; physical alignment and target WCET remain unverified.
+
+## Historical alignment verification
+
 `FOC_MODE_IDENT = 5` now aligns at 0, 120, 240 and 360 electrical degrees, with current decay before every angle switch, then runs the unchanged five current-regulated R points, return to the 1 A bias, and delayed square-wave L measurement from the final zero-degree position. This corrects the direction ambiguity observed in two bench runs of firmware `a96018a`. It does not change `power_guard` limits or arm conditions. No firmware was flashed and no hardware was accessed for this correction. These are software/model results, not HIL or measured ISR timing evidence.
 
 ## Contracts and bounded work

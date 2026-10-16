@@ -18,9 +18,12 @@ typedef struct {
     uint32_t enc0;
     uint32_t raw_base;
     double i0;
-    double cogging;  /* torque amplitude, 84 mechanical detents = 12 electrical */
-    double stiction; /* optional friction threshold, default 0.1 */
-    double rotor;    /* unwrapped electrical counts in the physical command frame */
+    double cogging;            /* torque amplitude, 84 mechanical detents = 12 electrical */
+    double cogging_modulation; /* zero-mean second spatial harmonic, nonuniform cogging torque */
+    double cogging_phase;      /* optional 84-detent phase; default 2.7 radians */
+    double modulation_phase;   /* phase of the lower spatial harmonic */
+    double stiction;           /* optional friction threshold, default 0.1 */
+    double rotor;              /* unwrapped electrical counts in the physical command frame */
     double stop_rotor;
     uint32_t last_theta;
     bool half_move;
@@ -55,7 +58,9 @@ static void rotor_step(plant_t* p, uint32_t theta) {
     const double radians_per_count = 6.283185307179586 / (double)IDENT_COUNTS;
     double error = remainder((double)theta - p->rotor, (double)IDENT_COUNTS);
     double torque = sin(error * radians_per_count) * p->i / (double)IDENT_ALIGN_A;
-    torque -= p->cogging * sin(12.0 * p->rotor * radians_per_count + 2.7);
+    double phase = p->cogging_phase != 0.0 ? p->cogging_phase : 2.7;
+    torque -= p->cogging * sin(12.0 * p->rotor * radians_per_count + phase)
+              + p->cogging_modulation * sin(2.0 * p->rotor * radians_per_count + p->modulation_phase);
 
     if (theta != p->last_theta) {
         p->stop_rotor = p->rotor + 0.5 * error;
@@ -189,8 +194,8 @@ static void test_accuracy(double r, double l, int direction, uint32_t enc0, doub
     CHECK(result->enc_240 >= p.raw_base && result->enc_240 < p.raw_base + IDENT_COUNTS);
     CHECK(result->enc_360 >= p.raw_base && result->enc_360 < p.raw_base + IDENT_COUNTS);
     CHECK(result->delta_a * direction > 0 && result->delta_b * direction > 0);
-    CHECK_NEAR(fabs((double)result->delta_a) * IDENT_POLE_PAIRS, IDENT_ALIGN_120, IDENT_ALIGN_TOL_E);
-    CHECK_NEAR(fabs((double)result->delta_b) * IDENT_POLE_PAIRS, IDENT_ALIGN_120, IDENT_ALIGN_TOL_E);
+    CHECK_NEAR(fabs((double)result->delta_a) * IDENT_POLE_PAIRS, IDENT_ALIGN_120, 200);
+    CHECK_NEAR(fabs((double)result->delta_b) * IDENT_POLE_PAIRS, IDENT_ALIGN_120, 200);
     CHECK(!result->r_nonlinear);
     CHECK_NEAR(result->v0, 0.15, 0.015);
     for (uint32_t k = 1U; k < IDENT_R_POINTS; k++) {
@@ -370,9 +375,11 @@ static void test_alignment_validation(void) {
         int32_t b;
         bool valid;
     } cases[] = {
-        {195, 195, true},  {167, 223, true},   {223, 167, true},   {166, 195, false},
-        {224, 195, false}, {195, 166, false},  {195, 224, false},  {195, 0, false},
-        {0, 195, false},   {195, -195, false}, {-195, 195, false},
+        {195, 195, true},  {110, 280, true},   {280, 110, true},   {109, 281, false}, {281, 109, false},
+        {241, 124, true},  {138, 195, true},   {137, 195, false},  {252, 195, true},  {253, 195, false},
+        {195, 109, false}, {195, 281, false},  {110, 110, false},  {280, 280, false}, {195, 0, false},
+        {0, 195, false},   {195, -195, false}, {-195, 195, false}, {98, 97, false},   {213, 190, true},
+        {204, 179, true},  {219, 186, true},   {193, 190, true},
     };
 
     for (int32_t direction = -1; direction <= 1; direction += 2) {
@@ -410,8 +417,8 @@ static void test_alignment_validation(void) {
 
 /** Validate both extra moves independently, including sign, magnitude and circular-mean wrap. */
 static void test_two_sided_validation(void) {
-    const int32_t moves[][2] = {{195, -195}, {167, -223},  {223, -167}, {166, -195}, {224, -195}, {195, -166},
-                                {195, -224}, {-195, -195}, {195, 195},  {0, -195},   {195, 0}};
+    const int32_t moves[][2] = {{195, -195}, {110, -280},  {280, -110}, {109, -195}, {281, -195}, {195, -109},
+                                {195, -281}, {-195, -195}, {195, 195},  {0, -195},   {195, 0}};
 
     for (int32_t dir = -1; dir <= 1; dir += 2) {
         for (size_t k = 0U; k < sizeof(moves) / sizeof(moves[0]); k++) {
@@ -420,7 +427,7 @@ static void test_two_sided_validation(void) {
             uint32_t a = dir > 0 ? 4090U : 6U;
             uint32_t mid = (a + (uint32_t)(dir * moves[k][0])) & 4095U;
             uint32_t b = (mid + (uint32_t)(dir * moves[k][1])) & 4095U;
-            motor_ident_in_t in = {.i_d = 1.0f, .enc_count = b + 8192U, .power_on = true};
+            motor_ident_in_t in = {.i_d = IDENT_ALIGN_A, .enc_count = b + 8192U, .power_on = true};
 
             motor_ident_start(&m);
             m.result.state = IDENT_ALIGN_BACK_ZERO;
@@ -646,10 +653,49 @@ static void test_cogging_offset(void) {
     }
 }
 
+/** Reproduce unequal bench-like moves with physical cogging torque, then refine both encoder polarities. */
+static void test_strong_cogging_alignment(void) {
+    for (int direction = -1; direction <= 1; direction += 2) {
+        /* The 84-detent term alone repeats every 120 degrees. A zero-mean
+         * lower spatial harmonic makes successive parks unequal without
+         * injecting encoder errors or prescribing the rotor's position.
+         * This is a regression plant, not a fitted model of the bench motor.
+         */
+        plant_t p = {.r = 0.1,
+                     .l = 100e-6,
+                     .vdt = 0.15,
+                     .direction = direction,
+                     .enc0 = 3745U,
+                     .raw_base = 57344U,
+                     .cogging = 0.093,
+                     .cogging_modulation = 0.396,
+                     .cogging_phase = 1.912,
+                     .modulation_phase = 1.920,
+                     .stiction = 0.055,
+                     .rotor = -394.0};
+        motor_ident_t m = run_plant(&p);
+        uint32_t expected = ((uint32_t)direction * p.enc0 * IDENT_POLE_PAIRS) & 4095U;
+        double error = remainder((double)m.result.offset_e_new - expected, (double)IDENT_COUNTS);
+        double move_a = (double)(direction * m.result.delta_a) * IDENT_POLE_PAIRS;
+        double move_b = (double)(direction * m.result.delta_b) * IDENT_POLE_PAIRS;
+
+        printf("strong cogging dir %d: deltas %d %d (%.1f, %.1f deg), offset error %.1f counts, %.3f s\n", direction,
+               m.result.delta_a, m.result.delta_b, move_a * 360.0 / IDENT_COUNTS, move_b * 360.0 / IDENT_COUNTS, error,
+               (double)m.run_n * (double)IDENT_PERIOD_S);
+        CHECK(m.result.state == IDENT_DONE && m.result.fail_reason == IDENT_FAIL_NONE);
+        CHECK(m.result.direction == direction);
+        CHECK_NEAR(move_a * 360.0 / IDENT_COUNTS, 148.0, 5.0);
+        CHECK_NEAR(move_b * 360.0 / IDENT_COUNTS, 76.0, 5.0);
+        CHECK(fabs(move_a - IDENT_ALIGN_120) > 200.0 && fabs(move_b - IDENT_ALIGN_120) > 200.0);
+        CHECK(fabs(error) < 30.0);
+        CHECK(m.run_n < IDENT_RUN_TIMEOUT_N);
+    }
+}
+
 /** Verify correction sign, wrap, exact rotation timing, settling exclusion and every plausibility boundary. */
 static void test_rotation_validation(void) {
-    const int32_t cases[][3] = {{-157, 102, 1}, {157, 102, 1}, {400, 600, 1}, {-400, 0, 1},
-                                {401, 0, 0},    {-401, 0, 0},  {0, -1, 0},    {0, 601, 0}};
+    const int32_t cases[][3] = {{-157, 102, 1}, {157, 102, 1}, {600, 400, 1}, {-600, 0, 1}, {601, 0, 0},
+                                {-601, 0, 0},   {0, -1, 0},    {0, 601, 0},   {0, 600, 1}};
     for (int32_t dir = -1; dir <= 1; dir += 2) {
         for (size_t k = 0U; k < sizeof(cases) / sizeof(cases[0]); k++) {
             motor_ident_t m;
@@ -703,6 +749,7 @@ static void test_rotation_validation(void) {
 
 /** Exercise production identification with reachable plants and explicit physical-limit failures. */
 int main(void) {
+    test_strong_cogging_alignment();
     test_cogging_offset();
     test_rotation_validation();
     test_dirty_start();
