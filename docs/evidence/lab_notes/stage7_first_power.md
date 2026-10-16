@@ -175,6 +175,12 @@ On DCBUS: identification run 4 first (direction −1 from −204 / −179 counts
 - **Offset bias** (fwd + bwd)/2 = −157 counts = **−13.8° electrical**: the alignment's final park always arrives from the same side (forward from 240°), so friction stops the rotor short. Fix planned: approach 0° from both sides and average.
 - The swing (sd about 12°) is cogging under a 1 A open-loop drive.
 
+### Current-loop firmware `89f28a3` (2026-10-15)
+
+Mode 4 while powered: only with a valid, plausible identification this boot (0.02 < R < 2 Ω, 10 µH < L < 5 mH); calibrated angle; gains kp = L·ωc, ki = R·ωc at 1 kHz; PI and vector limited to the 1.0 V cap (`foc_current_step_lim`, host-tested); id/iq references (`id_ma` +24, `iq_ma` +28) latched on a `step_seq` edge, |id| ≤ 1.0 A, |iq| ≤ 0.5 A, applied at capture sample 16 of a 256-sample dq capture; overspeed trip above 205 counts per 10 ms (300 rpm, fault 0x100). Alignment now ends with a two-sided park at 0° (arrive forward, then backward, circular mean). Host: iq/id step 90 % in 0.25 ms, overshoot 2–3 % (R 0.2 Ω, L 70 µH, locked rotor, one-period delay); two-sided park cuts the stiction bias from 64–65 to 1–2 counts. Design in `docs/evidence/stage7_current_loop_software.md`.
+
+Flashed on USB power (VBUS 89 mV, probe 63728769), SHA-256 `afb57f28e154db0ec308f322596cded196d4bf82ae7263cd4d38e5f0ef43536b`, verify OK; **command block `0x20001504`**. Boot benchmarks (max cycles): mode-4 kernel + angle + speed 1547, full Stage 5 step 1724, ident steps ≤ 828. Mode 4 with the stage off (same arithmetic, stage 6 path): ISR exec max **2603–2683 cycles (15.3–15.8 µs)** against 3400; stage off and pins safe throughout. Raw: `build/hil/stage7/current/`.
+
 ## Next (needs the user's go)
 
 Stage 7 first power, in the roadmap order, stopping at the first surprise:
