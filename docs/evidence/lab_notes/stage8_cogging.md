@@ -85,3 +85,29 @@ Phase B of the map is now a position-loop sweep (see `docs/evidence/stage8_coggi
 - **Mode 8 with the stage off:** phase 11 (failed), reason 1 (not powered), ff_valid 0. Register reads: GPIOB ODR 0 (SD1–SD4 low), GPIOA ODR 0, GPIOC MODER `0xFFFFFFFF` (PC0–PC3 analog).
 - **Missed periods:** one, at the close of the J-Link session for the mode-8 check. This is the known disconnect artefact; there were no overruns and no fault.
 - Raw: `build/hil/stage8/` (`jlink_flash_fc34266.txt`, `boot_fc34266.log`, `jlink_t_map_off_fc34266.txt`, `t_map_off_fc34266.log`).
+
+## Run 2 (DCBUS 15 V, 2026-10-15)
+
+Firmware `fc34266`. The board booted fresh on DCBUS after USB was unplugged (a new boot banner, with VBUS 15.0 V in the first report). Probe 63728769, one persistent J-Link session (connected with the stage off). Raw: `build/hil/stage8/` (`ident_run2.log`, `map_run2.log`, `jl_map_run2.out`, `marks_run2.txt`).
+
+**Identification:** direction −1, rotation c 26, load 118, offset 3351, R 200 mΩ, V0 234 mV, L 70 µH. ISR max 1756 cycles.
+
+**Gain check:** the same as run 1 within a few mA. Fit: I0 1092 mA, e1 0.3 %, e2 0.9 %.
+
+**Ripple map failed:** phase 11, reason 6 (slip), 20 s after the start, in the forward sweep. Calibrated position vs the target (410 counts/s):
+
+| t (s) | Position (counts) | Target (counts) |
+|---|---|---|
+| 44.5 | 264 | 287 |
+| 45.0 | 499 | 492 |
+| 45.3 | 676 (jump) | 615 |
+| 46.0 | 967 | 902 |
+| 46.6–47.4 | **1115, stuck** (raw 1968) | 1148 → 1476 |
+
+- The P term (4.19 mA/count) reaches the 0.5 A output cap at about 120 counts of error.
+- The duty pattern while stuck was constant: a vector of about 350 mV, which is R·0.5 A plus the DTC term. **iq was therefore about 0.5 A, and the rotor did not move.**
+- The static resisting torque at that position is above about 11 mNm. That matches the strong 84/turn slot cogging seen in stage 7, where a 1.0 A alignment lost to the detents. At 6 rpm, momentum does not carry the rotor through the detents as it does at 60 rpm.
+- While the rotor was still creeping (t = 46.5 s), the reported iq was 304 mA at an error of about 25 counts, so about 0.2 A came from the integrator.
+- There was no fault and no overrun. ISR max 2309 cycles in phase B. One missed period, at the J-Link session connect, with the stage off.
+
+**Decision (user, 2026-10-15):** raise the phase-B cap to 1.0 A (integral 0.8 A). See `docs/evidence/stage8_cogging_software.md`.

@@ -21,7 +21,8 @@ The sequence:
 3. **Ripple map: a position-loop sweep** (revised after bench run 1, where the 10 rpm speed-loop map went stick-slip):
    - A PID on the calibrated position error (target − measured, counts) sets iq; the current loop runs at the calibrated angle with DTC on and no feed-forward.
    - The target moves at 410 counts/s (about 6 rpm): hold 0.5 s, then 2 turns forward; hold 0.5 s, then 2 turns back.
-   - Gains: kp = J·w²/Kt, kd = 2ζ·J·w/Kt, ki = kp·w/5, with the assumed J = 1.5e-5, w = 2π·10 Hz, ζ = 0.8. That gives 4.19 mA/count, 7.28 mA/rpm and 52.6 mA/(count·s); integral ±0.3 A, output ±0.5 A.
+   - Gains: kp = J·w²/Kt, kd = 2ζ·J·w/Kt, ki = kp·w/5, with the assumed J = 1.5e-5, w = 2π·10 Hz, ζ = 0.8. That gives 4.19 mA/count, 7.28 mA/rpm and 52.6 mA/(count·s); integral ±0.8 A, output ±1.0 A.
+   - **The output limit was raised from 0.5 A to 1.0 A after bench run 2.** The rotor stuck at one position with iq at the 0.5 A cap (more than about 11 mNm of static 84/turn cogging plus friction). Phase B now passes its own limit `COG_POS_I_MAX` to `cog_ff_apply()` in `foc_ctrl.c`; before this, the mode 4/7 limit of 0.5 A clamped it as well. 1.0 A is below the identification currents (up to 1.5 A) and the 2 A software trip.
    - **J is not measured.** A pulse test is dominated by the 3–4 mNm cogging at any current that stays below the overspeed trip for an unknown J. The simulation covers J × 1/3 and × 3 instead.
    - iq is accumulated per mechanical bin of the *measured* position (256 bins × 2 directions; int32 mA sums, uint16 counts).
    - The run aborts on a position error above 400 counts (`COG_SLIP`).
@@ -99,17 +100,32 @@ Closed-loop simulation (`sim_stage7_speed`): a 14/turn cogging term of 3 mNm, an
 
 The 14/turn harmonic is recovered as 145 mA (true 138 mA, 5 % high).
 
-| Speed | Ripple RMS, ff off | Ripple RMS, ff on | Reduction |
+| Speed | Ripple RMS, ff off | Ripple RMS, ff on | Reduction | Order 14, off → on | Order 84, off → on |
+|---|---|---|---|---|---|
+| 60 rpm | 18.82 rpm | 2.30 rpm | 8.19× | 25.95 → 1.06 rpm | 3.19 → 1.57 rpm |
+| 100 rpm | 12.26 rpm | 1.58 rpm | 7.75× | 17.22 → 0.86 rpm | 1.58 → 0.95 rpm |
+
+**Bench-like plant (after run 2):**
+- **Plant:** 84/turn cogging of 8 mNm plus a 4 mNm breakaway, about 12 mNm (0.55 A) static. The 14/turn term stays at 3 mNm, and J is the nominal 1.5e-5. The map path in the simulation now goes through the same `cog_ff_apply()` clamp as the firmware.
+- **Old 0.5 A cap:** the map aborts on slip (400 counts) after 17.2 s, as on the bench.
+- **1.0 A cap:** the map completes in 56.1 s, with a maximum position error of 126 counts. The 14/turn harmonic is estimated as 175 mA (true 138 mA, 27 % high). This bias comes from stick-slip through the strong detents.
+- **Order-14 and order-84 columns:** these are the position-locked speed amplitudes. The mean is removed before projecting, because d(θ)/dt = ω makes the time average of ω·e^(−jkθ) cancel over whole turns.
+- The simulation checks for a reduction of at least 3× at order 14 (the 2×-electrical ripple the bench saw).
+
+| Speed | Ripple RMS, ff off → on | Order 14, off → on | Order 84, off → on |
 |---|---|---|---|
-| 60 rpm | 18.82 rpm | 2.30 rpm | 8.19× |
-| 100 rpm | 12.26 rpm | 1.58 rpm | 7.75× |
+| 60 rpm | 21.68 → 11.23 rpm (1.93×) | 27.64 → 6.29 rpm (4.4×) | 13.82 → 9.27 rpm |
+| 100 rpm | 13.07 → 7.03 rpm (1.86×) | 17.42 → 4.29 rpm (4.1×) | 6.13 → 5.51 rpm |
+
+- With 256 bins (about 3 per detent), the feed-forward barely corrects the 84/turn term, so the total RMS falls only about 1.9×.
+- The bench's 10 ms speed estimator hardly sees 84/turn at these speeds. Order 14 is the comparable figure there.
 
 ## Checks
 
 | Check | Result |
 |---|---|
 | ARM pristine build (`west build -p always … -DBUILD_VERSION=v4.4.2`) | OK |
-| CI gates from `.github/workflows/ci.yml`, run locally | rc 0: `budgets: flash 85832/98304 B; SRAM data+bss 16568/22528 B; CCM 9680/10240 B`, plus the allocation, GPIO and config gates |
+| CI gates from `.github/workflows/ci.yml`, run locally | rc 0: `budgets: flash 85832/98304 B; SRAM data+bss 16568/22528 B; CCM 9680/10240 B`, plus the allocation, GPIO and config gates. After the 1.0 A change: `flash 85848/98304 B; SRAM data+bss 16568/22528 B; CCM 9696/10240 B` |
 | clang-format `--dry-run --Werror` on all changed files | OK |
 | clang-tidy on the changed `src/*.c` | only `bugprone-signed-bitwise` inside Zephyr `LOG_*` macro expansions (main.c, foc_bench.c), the pre-existing GPIO/clock macro warnings in pwm_adc.c, and the known `K_THREAD_STACK_DEFINE` branch-clone; none in cog_map.c, cog_proc.c, foc_ctrl.c, motor_ident.c |
 

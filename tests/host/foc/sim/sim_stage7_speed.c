@@ -19,6 +19,10 @@
 #define RIPPLE_BOUND_RPM 8.0
 
 static double cog14_torque;
+/* 84/turn slot cogging amplitude. Stage 8 run 2 stuck at one position with
+ * iq at the 0.5 A map cap (about 11 mNm), so the bench case uses more.
+ */
+static double cog84_torque = 0.002;
 /* Breakaway torque at rest; 0.5 mNm (= Coulomb) for the stage 7 cases. Stage 8
  * uses 2 mNm: on the bench 50 mA (about 1.1 mNm) did not move the rotor, and the
  * 10 rpm speed-loop map went stick-slip.
@@ -63,7 +67,7 @@ static void plant_step(plant_t* p, foc_abc_t duty, double inertia) {
         double did = (vd - 0.2 * p->id + 7.0 * p->omega * 70e-6 * p->iq) / 70e-6;
         double diq = (vq - 0.2 * p->iq - 7.0 * p->omega * (70e-6 * p->id + PSI)) / 70e-6;
         double torque =
-            KT * p->iq - 1e-6 * p->omega - 0.002 * sin(84.0 * p->theta) - cog14_torque * sin(14.0 * p->theta);
+            KT * p->iq - 1e-6 * p->omega - cog84_torque * sin(84.0 * p->theta) - cog14_torque * sin(14.0 * p->theta);
         /* Coulomb friction opposes motion; static friction balances torque at rest. */
         if (fabs(p->omega) < 1e-5 && fabs(torque) <= stiction_torque) {
             p->omega = 0.0;
@@ -217,7 +221,9 @@ static void experiment_step(experiment_t* e, cog_map_t* map, float target, const
     foc_sincos_t sc = {.sin_theta = (float)sin(angle), .cos_theta = (float)cos(angle)};
     foc_current_out_t out;
     if (current_mode) {
-        float iq = speed_mode ? cog_ff_apply(e->speed.iq, 0.5f, table != NULL, table != NULL, table, enc) : map->iq_cmd;
+        /* Same clamp as foc_ctrl.c: the map's own limit in phase B, feed-forward only in speed mode. */
+        float iq = cog_ff_apply(speed_mode ? e->speed.iq : map->iq_cmd, speed_mode ? 0.5f : COG_POS_I_MAX,
+                                speed_mode && table != NULL, table != NULL, table, enc);
         foc_dq_t ref = {.q = iq};
         foc_ab_t comp = foc_deadtime_comp(foc_inv_clarke(foc_inv_park(ref, sc)), 0.175f, 0.05f);
         foc_current_step_ff(&e->cc, currents, sc, ref, 15.0f, (float)DT, comp, 1.0f, &out);
@@ -230,12 +236,23 @@ static void experiment_step(experiment_t* e, cog_map_t* map, float target, const
     CHECK(isfinite(e->plant.omega) && fabs(e->plant.iq) < 2.0);
 }
 
+/** Speed ripple RMS and its position-locked amplitudes at mechanical orders 14 and 84. */
+typedef struct {
+    double rms;
+    double order14;
+    double order84;
+} ripple_t;
+
 /** Measure steady speed ripple over four seconds after a two-second settle. */
-static double experiment_ripple(float target, const int16_t* table) {
+static ripple_t experiment_ripple(float target, const int16_t* table) {
     experiment_t e;
     experiment_init(&e);
     double sum = 0.0;
     double square = 0.0;
+    /* Sums of rpm*cos, rpm*sin, cos, sin for orders 14 and 84. Since d(theta)/dt = omega,
+     * the time average of omega*exp(-jk*theta) cancels over whole turns: remove the mean.
+     */
+    double h[2][4] = {{0.0}};
     unsigned int count = 0U;
     for (uint32_t n = 0U; n < 120000U; n++) {
         experiment_step(&e, NULL, target, table);
@@ -243,11 +260,32 @@ static double experiment_ripple(float target, const int16_t* table) {
             double rpm = e.plant.omega * 60.0 / TAU;
             sum += rpm;
             square += rpm * rpm;
+            for (unsigned int k = 0U; k < 2U; k++) {
+                double angle = (k == 0U ? 14.0 : 84.0) * e.plant.theta;
+                h[k][0] += rpm * cos(angle);
+                h[k][1] += rpm * sin(angle);
+                h[k][2] += cos(angle);
+                h[k][3] += sin(angle);
+            }
             count++;
         }
     }
     CHECK(fabs(sum / count - target) < 1.0);
-    return sqrt(fmax(0.0, square / count - (sum / count) * (sum / count)));
+    double mean = sum / count;
+    ripple_t r = {.rms = sqrt(fmax(0.0, square / count - mean * mean)),
+                  .order14 = 2.0 * hypot(h[0][0] - mean * h[0][2], h[0][1] - mean * h[0][3]) / count,
+                  .order84 = 2.0 * hypot(h[1][0] - mean * h[1][2], h[1][1] - mean * h[1][3]) / count};
+    return r;
+}
+
+/** Print off/on ripple; return the order-14 reduction, the component the stage 7 bench saw. */
+static double ripple_compare(const char* label, uint32_t rpm, const int16_t* table) {
+    ripple_t off = experiment_ripple((float)rpm, NULL);
+    ripple_t on = experiment_ripple((float)rpm, table);
+    printf("%s %u rpm ripple RMS: off %.3f rpm, on %.3f rpm, reduction %.2fx; order 14 %.3f -> %.3f rpm, "
+           "order 84 %.3f -> %.3f rpm\n",
+           label, rpm, off.rms, on.rms, off.rms / on.rms, off.order14, on.order14, off.order84, on.order84);
+    return off.order14 / on.order14;
 }
 
 /** Run the full mode-8 sequencer on a plant with the given inertia; return the processed map. */
@@ -278,14 +316,23 @@ static void run_cogging_experiment(void) {
     stiction_torque = 0.002;
     CHECK(run_map(0.5e-5, &other));
     CHECK(run_map(4.5e-5, &other));
+    /* Bench-like: 84/turn cogging 8 mNm + 4 mNm breakaway (12 mNm static, 0.55 A at Kt). */
+    cog84_torque = 0.008;
+    stiction_torque = 0.004;
+    CHECK(run_map(1.5e-5, &other));
+    printf("sim map (cog84 8 mNm, stiction 4 mNm) harmonic 14: %.1f mA (expected %.1f mA)\n",
+           (double)other.harmonic[3].amplitude_ma, 0.003 / KT * 1000.0);
+    for (uint32_t rpm = 60U; rpm <= 100U; rpm += 40U) {
+        /* The 84/turn term is barely resolved by 256 bins (3 per detent); order 14 is the bench ripple. */
+        CHECK(ripple_compare("bench-like", rpm, other.ff) >= 3.0);
+    }
+    cog84_torque = 0.002;
+    stiction_torque = 0.002;
     CHECK(run_map(1.5e-5, &processed));
     printf("sim map harmonic 14: %.1f mA (expected %.1f mA)\n", (double)processed.harmonic[3].amplitude_ma,
            0.003 / KT * 1000.0);
     for (uint32_t rpm = 60U; rpm <= 100U; rpm += 40U) {
-        double off = experiment_ripple((float)rpm, NULL);
-        double on = experiment_ripple((float)rpm, processed.ff);
-        printf("Stage 8 %u rpm ripple RMS: off %.6f rpm, on %.6f rpm, reduction %.3fx\n", rpm, off, on, off / on);
-        CHECK(on * 3.0 <= off);
+        CHECK(ripple_compare("Stage 8", rpm, processed.ff) >= 3.0);
     }
 }
 

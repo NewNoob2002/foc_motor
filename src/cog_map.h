@@ -25,8 +25,14 @@
 #define COG_POS_REVS        2U     /* turns each way */
 #define COG_POS_HOLD_N      10000U /* 0.5 s hold before each sweep */
 #define COG_POS_SLIP_COUNTS 400.0f /* |target - position| that aborts (35 deg mechanical) */
-#define COG_POS_I_MAX       0.5f   /* A, as the speed loop */
-#define COG_POS_INT_MAX     0.3f   /* A, integral clamp */
+/*
+ * Stage 8 run 2 stuck at one position with iq at a 0.5 A cap: at crawl speed
+ * the sweep must beat the static 84/turn slot cogging plus friction, which
+ * the bench showed to exceed 0.5 A (about 11 mNm). 1.0 A stays below the
+ * identification currents (up to 1.5 A) and the 2 A software trip.
+ */
+#define COG_POS_I_MAX       1.0f /* A */
+#define COG_POS_INT_MAX     0.8f /* A, integral clamp */
 
 /*
  * PID gains for an inertia J and torque constant Kt at bandwidth w with

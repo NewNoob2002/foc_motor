@@ -635,8 +635,9 @@ void foc_ctrl_step(const pwm_adc_sample_t* sample, pwm_adc_cmd_t* cmd) {
         i_ref.q = mode == FOC_MODE_SPEED ? st.speed_loop.iq
                   : mapping_current      ? map.iq_cmd
                                          : (float)st.iq_ref_ma * 0.001f;
-        i_ref.q = cog_ff_apply(i_ref.q, FOC_CTRL_IQ_MAX_A, st.cff && !mapping_current, atomic_get(&ff_valid) == 1,
-                               ff_table, sample->enc_count);
+        /* Phase B uses the map's own iq limit (above the mode 4/7 limit, see cog_map.h). */
+        i_ref.q = cog_ff_apply(i_ref.q, mapping_current ? COG_POS_I_MAX : FOC_CTRL_IQ_MAX_A, st.cff && !mapping_current,
+                               atomic_get(&ff_valid) == 1, ff_table, sample->enc_count);
         iq_total = i_ref.q;
         if (!sample->power_on || !gout.power_on) {
             foc_pi_reset(&st.cc.pi_d);
