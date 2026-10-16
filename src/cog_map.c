@@ -45,6 +45,11 @@ bool cog_map_start(cog_map_t* m, bool power, bool calibration, float voltage, in
     m->target_v = voltage;
     m->alpha_sum = 0.0f;
     m->beta_sum = 0.0f;
+    m->pos = 0;
+    m->tgt_q16 = 0;
+    m->tgt_rem = 0;
+    m->integ = 0.0f;
+    m->iq_cmd = 0.0f;
     if (!power) {
         finish(m, COG_NOT_POWERED);
     } else if (!calibration || !(voltage > 0.05f && voltage < 0.9f) || (direction != 1 && direction != -1)) {
@@ -71,7 +76,7 @@ void cog_map_step(cog_map_t* m, const cog_map_in_t* in) {
         cog_map_abort(m, COG_CANCELLED);
     } else if (!in->power) {
         cog_map_abort(m, COG_NOT_POWERED);
-    } else if (!isfinite(in->alpha) || !isfinite(in->beta) || !isfinite(in->rpm) || !isfinite(in->iq)) {
+    } else if (!isfinite(in->alpha) || !isfinite(in->beta) || !isfinite(in->rpm)) {
         cog_map_abort(m, COG_NUMERIC);
     } else if (++m->ticks > COG_TIMEOUT_N) {
         cog_map_abort(m, COG_TIMEOUT);
@@ -131,42 +136,74 @@ void cog_map_step(cog_map_t* m, const cog_map_in_t* in) {
                     m->point++;
                     m->dwell = 0U;
                     m->raw.phase = m->point == COG_GAIN_POINTS ? COG_FORWARD_SETTLE : COG_GAIN_RAMP;
+                    if (m->raw.phase == COG_FORWARD_SETTLE) {
+                        /* Hold where the rotor is: position and target both start at 0. */
+                        m->previous = in->enc;
+                        m->pos = 0;
+                        m->tgt_q16 = 0;
+                        m->tgt_rem = 0;
+                        m->integ = 0.0f;
+                        m->iq_cmd = 0.0f;
+                    }
                 }
             } else {
                 m->dwell = 0U;
             }
             break;
         default: {
-            float target = cog_map_rpm(m);
-            m->slip = fabsf(in->rpm - target) > 5.0f ? m->slip + 1U : 0U;
-            if (m->slip > 20000U) {
-                cog_map_abort(m, COG_SLIP);
-                break;
-            }
+            /* Phase B: position-loop sweep (see cog_map.h). */
             int32_t delta = (int32_t)((in->enc - m->previous + 2048U) & 4095U) - 2048;
             m->previous = in->enc;
+            m->pos += delta * m->direction;
+            int32_t rate = m->raw.phase == COG_FORWARD   ? COG_POS_RATE_CPS
+                           : m->raw.phase == COG_REVERSE ? -COG_POS_RATE_CPS
+                                                         : 0;
+            /* Exact Q16 target: |rate * 65536| < 2^25, no float drift over the sweep. */
+            int32_t numerator = rate * 65536 + m->tgt_rem;
+            m->tgt_q16 += numerator / 20000;
+            m->tgt_rem = numerator % 20000;
+            float err = (float)m->tgt_q16 * (1.0f / 65536.0f) - (float)m->pos;
+            if (!(fabsf(err) <= COG_POS_SLIP_COUNTS)) {
+                cog_map_abort(m, COG_SLIP); /* stalled, slipped, or a sign error */
+                break;
+            }
+            m->integ += COG_POS_KI_DT * err;
+            if (m->integ > COG_POS_INT_MAX) {
+                m->integ = COG_POS_INT_MAX;
+            } else if (m->integ < -COG_POS_INT_MAX) {
+                m->integ = -COG_POS_INT_MAX;
+            }
+            float target_rpm = (float)rate * (60.0f / 4096.0f);
+            float iq = COG_POS_KP * err + m->integ + COG_POS_KD * (target_rpm - in->rpm);
+            if (iq > COG_POS_I_MAX) {
+                iq = COG_POS_I_MAX;
+            } else if (iq < -COG_POS_I_MAX) {
+                iq = -COG_POS_I_MAX;
+            }
             if (m->raw.phase == COG_FORWARD_SETTLE || m->raw.phase == COG_REVERSE_SETTLE) {
-                if (m->dwell == COG_SPEED_SETTLE_N) {
+                m->iq_cmd = iq;
+                if (m->dwell == COG_POS_HOLD_N) {
                     m->raw.phase = m->raw.phase == COG_FORWARD_SETTLE ? COG_FORWARD : COG_REVERSE;
                     m->dwell = 0U;
                     m->travel = 0;
                 }
                 break;
             }
+            /* The iq applied during the period that ended at this sample was last period's command. */
             uint32_t d = m->raw.phase == COG_FORWARD ? 0U : 1U;
             uint32_t b = (in->enc & 4095U) >> 4U;
-            if (fabsf(in->iq) > 0.50001f || m->raw.count[d][b] == UINT16_MAX) {
+            if (m->raw.count[d][b] == UINT16_MAX) {
                 cog_map_abort(m, COG_OVERFLOW);
                 break;
             }
-            m->raw.sum[d][b] += (int32_t)(in->iq * 1000.0f);
+            m->raw.sum[d][b] += (int32_t)(m->iq_cmd * 1000.0f);
             m->raw.count[d][b]++;
+            m->iq_cmd = iq;
             m->travel += delta * m->direction * (d == 0U ? 1 : -1);
-            if (m->travel >= (int32_t)(FOC_CTRL_MAP_REVS * 4096U)) {
+            if (m->travel >= (int32_t)(COG_POS_REVS * 4096U)) {
                 if (d == 0U) {
                     m->raw.phase = COG_REVERSE_SETTLE;
                     m->dwell = 0U;
-                    m->slip = 0U;
                 } else {
                     finish(m, COG_OK);
                 }
@@ -191,15 +228,9 @@ uint32_t cog_map_angle(const cog_map_t* m) {
     return m->point < COG_GAIN_POINTS ? m->point * 4096U / COG_GAIN_POINTS : 0U;
 }
 
-/** Select the speed loop only while collecting phase B. */
-float cog_map_rpm(const cog_map_t* m) {
-    if (m->raw.phase == COG_FORWARD_SETTLE || m->raw.phase == COG_FORWARD) {
-        return (float)FOC_CTRL_MAP_RPM;
-    }
-    if (m->raw.phase == COG_REVERSE_SETTLE || m->raw.phase == COG_REVERSE) {
-        return -(float)FOC_CTRL_MAP_RPM;
-    }
-    return 0.0f;
+/** Select the closed current loop at the calibrated angle while phase B runs. */
+bool cog_map_current(const cog_map_t* m) {
+    return m->raw.phase >= COG_FORWARD_SETTLE && m->raw.phase <= COG_REVERSE;
 }
 
 /** Bin b represents count 16*b+8; shift by half a bin before interpolation. */

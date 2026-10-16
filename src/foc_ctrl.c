@@ -563,7 +563,7 @@ void foc_ctrl_step(const pwm_adc_sample_t* sample, pwm_adc_cmd_t* cmd) {
             out.v_dq.d = VOLTAGE_MODE_VD_V;
             break;
         case FOC_MODE_MAP:
-            e_count = cog_map_rpm(&map) != 0.0f ? theta_meas_count(sample->enc_count) : cog_map_angle(&map);
+            e_count = cog_map_current(&map) ? theta_meas_count(sample->enc_count) : cog_map_angle(&map);
             __attribute__((fallthrough));
         case FOC_MODE_SPEED:
         case FOC_MODE_CURRENT:
@@ -586,7 +586,7 @@ void foc_ctrl_step(const pwm_adc_sample_t* sample, pwm_adc_cmd_t* cmd) {
 
     foc_sincos_t sc;
 
-    bool mapping_speed = false;
+    bool mapping_current = false;
     if (mode == FOC_MODE_MAP && cog_map_get(&map) == NULL) {
         foc_ab_t ab = foc_clarke(i_abc);
         cog_map_in_t in;
@@ -594,18 +594,14 @@ void foc_ctrl_step(const pwm_adc_sample_t* sample, pwm_adc_cmd_t* cmd) {
         in.alpha = ab.alpha;
         in.beta = ab.beta;
         in.rpm = st.rpm;
-        in.iq = st.speed_loop.iq;
         in.power = sample->power_on && gout.power_on;
         in.armed = gin.arm_key;
         in.fault = gout.trip != 0U;
-        /* Record the held PI reference before computing the next update. */
         cog_map_step(&map, &in);
-        mapping_speed = cog_map_rpm(&map) != 0.0f;
-        if (mapping_speed) {
+        mapping_current = cog_map_current(&map);
+        if (mapping_current) {
+            /* Phase B: the map's position loop sets iq; current loop at the calibrated angle, DTC on. */
             e_count = theta_meas_count(sample->enc_count);
-            if (speed_tick) {
-                foc_speed_loop_update(&st.speed_loop, cog_map_rpm(&map), st.rpm, false);
-            }
             st.dtc = true;
         } else {
             e_count = cog_map_angle(&map);
@@ -613,8 +609,10 @@ void foc_ctrl_step(const pwm_adc_sample_t* sample, pwm_adc_cmd_t* cmd) {
         }
     }
     sincos_e_count(e_count, &sc.sin_theta, &sc.cos_theta);
-    float iq_total = (mode == FOC_MODE_SPEED || mapping_speed) ? st.speed_loop.iq : (float)st.iq_ref_ma * 0.001f;
-    if (mode == FOC_MODE_CURRENT || mode == FOC_MODE_SPEED || mapping_speed) {
+    float iq_total = mode == FOC_MODE_SPEED ? st.speed_loop.iq
+                     : mapping_current      ? map.iq_cmd
+                                            : (float)st.iq_ref_ma * 0.001f;
+    if (mode == FOC_MODE_CURRENT || mode == FOC_MODE_SPEED || mapping_current) {
         if (st.current_powered != powered) {
             pi_reset(powered);
             st.current_powered = powered;
@@ -633,8 +631,11 @@ void foc_ctrl_step(const pwm_adc_sample_t* sample, pwm_adc_cmd_t* cmd) {
         foc_dq_t i_ref;
 
         i_ref.d = (float)st.id_ref_ma * 0.001f;
-        i_ref.q = (mode == FOC_MODE_SPEED || mapping_speed) ? st.speed_loop.iq : (float)st.iq_ref_ma * 0.001f;
-        i_ref.q = cog_ff_apply(i_ref.q, FOC_CTRL_IQ_MAX_A, st.cff && !mapping_speed, atomic_get(&ff_valid) == 1,
+        /* Evaluated after speed_update()/current_capture_prepare(), which update these references. */
+        i_ref.q = mode == FOC_MODE_SPEED ? st.speed_loop.iq
+                  : mapping_current      ? map.iq_cmd
+                                         : (float)st.iq_ref_ma * 0.001f;
+        i_ref.q = cog_ff_apply(i_ref.q, FOC_CTRL_IQ_MAX_A, st.cff && !mapping_current, atomic_get(&ff_valid) == 1,
                                ff_table, sample->enc_count);
         iq_total = i_ref.q;
         if (!sample->power_on || !gout.power_on) {
@@ -702,7 +703,7 @@ void foc_ctrl_step(const pwm_adc_sample_t* sample, pwm_adc_cmd_t* cmd) {
     cmd->power_on = gout.power_on;
     cmd->trip = ((gout.trip & POWER_GUARD_TRIP_OVERCURRENT) != 0U ? PWM_ADC_FAULT_OVERCURRENT : 0U)
                 | ((gout.trip & POWER_GUARD_TRIP_VBUS) != 0U ? PWM_ADC_FAULT_VBUS : 0U);
-    if (powered && (mode == FOC_MODE_CURRENT || mode == FOC_MODE_SPEED || mapping_speed)
+    if (powered && (mode == FOC_MODE_CURRENT || mode == FOC_MODE_SPEED || mapping_current)
         && (st.speed.trip_counts > FOC_CTRL_OVERSPEED_COUNTS || st.speed.trip_counts < -FOC_CTRL_OVERSPEED_COUNTS)) {
         cmd->trip |= PWM_ADC_FAULT_OVERSPEED;
     }
@@ -746,7 +747,7 @@ void foc_ctrl_step(const pwm_adc_sample_t* sample, pwm_adc_cmd_t* cmd) {
     snap.i_q_ref = iq_total;
     snap.cc_kp = st.cc.pi_d.kp;
     snap.cc_ki = st.cc.pi_d.ki;
-    snap.speed_counts = (mode == FOC_MODE_CURRENT || mode == FOC_MODE_SPEED || mapping_speed) ? st.speed.counts : 0;
+    snap.speed_counts = (mode == FOC_MODE_CURRENT || mode == FOC_MODE_SPEED || mapping_current) ? st.speed.counts : 0;
     snap.speed_rpm = st.rpm;
     snap.spd_ref_rpm = st.speed_loop.ref;
     snap.spd_target_rpm = st.spd_target;

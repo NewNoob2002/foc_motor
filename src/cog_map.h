@@ -6,15 +6,45 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#define FOC_CTRL_MAP_BINS  256U
-#define FOC_CTRL_MAP_RPM   10
-#define FOC_CTRL_MAP_REVS  3U
-#define COG_GAIN_POINTS    12U
-#define COG_SETTLE_N       6000U
-#define COG_AVERAGE_N      2000U
-#define COG_SPEED_SETTLE_N 20000U
-#define COG_TIMEOUT_N      1100000U /* 55 s, including voltage decay/ramp. */
-#define COG_MIN_SAMPLES    32U
+#define FOC_CTRL_MAP_BINS   256U
+#define COG_GAIN_POINTS     12U
+#define COG_SETTLE_N        6000U
+#define COG_AVERAGE_N       2000U
+#define COG_TIMEOUT_N       1400000U /* 70 s: gain check about 16 s, sweep about 42 s. */
+#define COG_MIN_SAMPLES     32U
+
+/*
+ * Phase B is a position-loop sweep, not a speed-loop run: on the bench the
+ * 10 rpm speed loop went stick-slip (stage 8 run 1), because its iq builds
+ * up too slowly against stiction and cogging. A stiff position loop drags a
+ * target angle at COG_POS_RATE_CPS; the iq it needs at each measured
+ * position is cogging + friction (+ a small inertial term at this speed).
+ * Positions are calibrated mechanical counts (direction applied).
+ */
+#define COG_POS_RATE_CPS    410    /* counts/s, about 6.0 rpm */
+#define COG_POS_REVS        2U     /* turns each way */
+#define COG_POS_HOLD_N      10000U /* 0.5 s hold before each sweep */
+#define COG_POS_SLIP_COUNTS 400.0f /* |target - position| that aborts (35 deg mechanical) */
+#define COG_POS_I_MAX       0.5f   /* A, as the speed loop */
+#define COG_POS_INT_MAX     0.3f   /* A, integral clamp */
+
+/*
+ * PID gains for an inertia J and torque constant Kt at bandwidth w with
+ * damping zeta: kp = J*w^2/Kt, kd = 2*zeta*J*w/Kt, ki = kp*w/5. J is the
+ * stage 7 assumption (not measured: a pulse test is dominated by the
+ * 3-4 mNm cogging at any current that stays below the overspeed trip for
+ * an unknown J). For J three times smaller the loop is faster and more
+ * damped; three times larger gives w/sqrt(3) and zeta/sqrt(3) = 0.46 (host
+ * simulation covers both). Units: A per count, A per rpm, A per count per
+ * period.
+ */
+#define COG_J_EST           1.5e-5f /* kg m^2 */
+#define COG_KT              0.0217f /* Nm/A */
+#define COG_POS_W           (6.28318530718f * 10.0f)
+#define COG_POS_ZETA        0.8f
+#define COG_POS_KP          (COG_J_EST * COG_POS_W * COG_POS_W / COG_KT * (6.28318530718f / 4096.0f))
+#define COG_POS_KD          (2.0f * COG_POS_ZETA * COG_J_EST * COG_POS_W / COG_KT * (6.28318530718f / 60.0f))
+#define COG_POS_KI_DT       (COG_POS_KP * COG_POS_W * 0.2f * 50e-6f)
 
 typedef enum {
     COG_IDLE,
@@ -58,8 +88,7 @@ typedef struct {
     uint32_t enc;
     float alpha;
     float beta;
-    float rpm;
-    float iq;
+    float rpm; /* calibrated frame, from the 10 ms estimator */
     bool power;
     bool armed;
     bool fault;
@@ -84,6 +113,11 @@ typedef struct {
     float target_v;
     float alpha_sum;
     float beta_sum;
+    int32_t pos;     /* measured, calibrated counts since the sweep start */
+    int32_t tgt_q16; /* target, Q16 calibrated counts */
+    int32_t tgt_rem; /* fractional carry of the target, denominator 20000 */
+    float integ;     /* A, PID integral */
+    float iq_cmd;    /* A, the sweep's iq reference for the next period */
 } cog_map_t;
 
 /** Begin a run only if the thread has released the preceding result. */
@@ -98,8 +132,8 @@ const cog_raw_t* cog_map_get(const cog_map_t* m);
 void cog_map_release(cog_map_t* m);
 /** Return the calibrated electrical command angle for the gain check. */
 uint32_t cog_map_angle(const cog_map_t* m);
-/** Return the requested speed, or zero outside phase B. */
-float cog_map_rpm(const cog_map_t* m);
+/** True while phase B runs the current loop at the calibrated angle with iq = iq_cmd. */
+bool cog_map_current(const cog_map_t* m);
 /** Interpolate mA samples at mechanical bin centres, including the wrap. */
 float cog_ff_lookup(const int16_t table[FOC_CTRL_MAP_BINS], uint32_t enc);
 /** Add an accepted feed-forward request and clamp to the current reference limit. */

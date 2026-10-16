@@ -19,6 +19,11 @@
 #define RIPPLE_BOUND_RPM 8.0
 
 static double cog14_torque;
+/* Breakaway torque at rest; 0.5 mNm (= Coulomb) for the stage 7 cases. Stage 8
+ * uses 2 mNm: on the bench 50 mA (about 1.1 mNm) did not move the rotor, and the
+ * 10 rpm speed-loop map went stick-slip.
+ */
+static double stiction_torque = 0.0005;
 
 typedef struct {
     double id;
@@ -60,7 +65,7 @@ static void plant_step(plant_t* p, foc_abc_t duty, double inertia) {
         double torque =
             KT * p->iq - 1e-6 * p->omega - 0.002 * sin(84.0 * p->theta) - cog14_torque * sin(14.0 * p->theta);
         /* Coulomb friction opposes motion; static friction balances torque at rest. */
-        if (fabs(p->omega) < 1e-5 && fabs(torque) <= 0.0005) {
+        if (fabs(p->omega) < 1e-5 && fabs(torque) <= stiction_torque) {
             p->omega = 0.0;
             torque = 0.0;
         } else {
@@ -169,12 +174,14 @@ typedef struct {
     foc_current_t cc;
     foc_abc_t applied;
     float rpm;
+    double inertia;
 } experiment_t;
 
 /** Reset all control history and PWM preload for an independent comparison. */
 static void experiment_init(experiment_t* e) {
     *e = (experiment_t){0};
     e->applied = (foc_abc_t){.a = 0.5f, .b = 0.5f, .c = 0.5f};
+    e->inertia = 1.5e-5;
     e->cc.pi_d.kp = 70e-6f * 6283.18530718f;
     e->cc.pi_d.ki = 0.2f * 6283.18530718f;
     e->cc.pi_q = e->cc.pi_d;
@@ -197,33 +204,28 @@ static void experiment_step(experiment_t* e, cog_map_t* map, float target, const
     foc_abc_t currents = phase_currents(&e->plant);
     if (map != NULL) {
         foc_ab_t ab = foc_clarke(currents);
-        cog_map_in_t in = {.enc = enc,
-                           .alpha = ab.alpha,
-                           .beta = ab.beta,
-                           .rpm = e->rpm,
-                           .iq = e->speed.iq,
-                           .power = true,
-                           .armed = true};
+        cog_map_in_t in = {.enc = enc, .alpha = ab.alpha, .beta = ab.beta, .rpm = e->rpm, .power = true, .armed = true};
         cog_map_step(map, &in);
-        target = cog_map_rpm(map);
     }
-    bool speed_mode = map == NULL || target != 0.0f;
+    bool speed_mode = map == NULL;
+    bool current_mode = speed_mode || cog_map_current(map);
     if (tick && speed_mode) {
         foc_speed_loop_update(&e->speed, target, e->rpm, false);
     }
-    uint32_t angle_count = speed_mode ? (enc * 7U) & 4095U : cog_map_angle(map);
+    uint32_t angle_count = current_mode ? (enc * 7U) & 4095U : cog_map_angle(map);
     double angle = angle_count * TAU / 4096.0;
     foc_sincos_t sc = {.sin_theta = (float)sin(angle), .cos_theta = (float)cos(angle)};
     foc_current_out_t out;
-    if (speed_mode) {
-        foc_dq_t ref = {.q = cog_ff_apply(e->speed.iq, 0.5f, table != NULL, table != NULL, table, enc)};
+    if (current_mode) {
+        float iq = speed_mode ? cog_ff_apply(e->speed.iq, 0.5f, table != NULL, table != NULL, table, enc) : map->iq_cmd;
+        foc_dq_t ref = {.q = iq};
         foc_ab_t comp = foc_deadtime_comp(foc_inv_clarke(foc_inv_park(ref, sc)), 0.175f, 0.05f);
         foc_current_step_ff(&e->cc, currents, sc, ref, 15.0f, (float)DT, comp, 1.0f, &out);
     } else {
         foc_dq_t voltage = {.d = map->voltage};
         (void)foc_svpwm(foc_inv_park(voltage, sc), 15.0f, &out.duty);
     }
-    plant_step(&e->plant, e->applied, 1.5e-5);
+    plant_step(&e->plant, e->applied, e->inertia);
     e->applied = out.duty;
     CHECK(isfinite(e->plant.omega) && fabs(e->plant.iq) < 2.0);
 }
@@ -248,20 +250,37 @@ static double experiment_ripple(float target, const int16_t* table) {
     return sqrt(fmax(0.0, square / count - (sum / count) * (sum / count)));
 }
 
-/** Measure the map through the full sequencer, then compare identical off/on plants. */
-static void run_cogging_experiment(void) {
+/** Run the full mode-8 sequencer on a plant with the given inertia; return the processed map. */
+static bool run_map(double inertia, cog_processed_t* processed) {
     experiment_t e;
-    cog_map_t map = {0};
-    cog_processed_t processed;
+    static cog_map_t map;
     experiment_init(&e);
-    cog14_torque = 0.003;
+    e.inertia = inertia;
+    map = (cog_map_t){0};
     CHECK(cog_map_start(&map, true, true, 0.434f, 1, 0U));
+    double err_max = 0.0;
     for (uint32_t n = 0U; n <= COG_TIMEOUT_N && cog_map_get(&map) == NULL; n++) {
         experiment_step(&e, &map, 0.0f, NULL);
+        if (cog_map_current(&map)) {
+            err_max = fmax(err_max, fabs(map.tgt_q16 / 65536.0 - map.pos));
+        }
     }
-    printf("sim map: phase %u reason %u duration %.3f s\n", map.raw.phase, map.raw.reason, map.ticks * DT);
-    CHECK(cog_map_get(&map) != NULL && map.raw.phase == COG_DONE);
-    CHECK(cog_process(&map.raw, &processed));
+    printf("sim map J %.1e: phase %u reason %u duration %.3f s, max position error %.1f counts\n", inertia,
+           map.raw.phase, map.raw.reason, map.ticks * DT, err_max);
+    return cog_map_get(&map) != NULL && map.raw.phase == COG_DONE && cog_process(&map.raw, processed);
+}
+
+/** Map with stiction at three inertias, then compare identical off/on plants at the nominal one. */
+static void run_cogging_experiment(void) {
+    static cog_processed_t processed;
+    static cog_processed_t other;
+    cog14_torque = 0.003;
+    stiction_torque = 0.002;
+    CHECK(run_map(0.5e-5, &other));
+    CHECK(run_map(4.5e-5, &other));
+    CHECK(run_map(1.5e-5, &processed));
+    printf("sim map harmonic 14: %.1f mA (expected %.1f mA)\n", (double)processed.harmonic[3].amplitude_ma,
+           0.003 / KT * 1000.0);
     for (uint32_t rpm = 60U; rpm <= 100U; rpm += 40U) {
         double off = experiment_ripple((float)rpm, NULL);
         double on = experiment_ripple((float)rpm, processed.ff);

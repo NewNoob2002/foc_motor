@@ -18,10 +18,14 @@ The sequence:
 2. **Gain check:** an open-loop voltage vector of the identified 1 A R-point voltage at 12 electrical angles (calibrated frame), with no current loop. Ramp at 1 V/s, settle 0.3 s, average 2000 samples of i_α / i_β, ramp down, then 20 ms at 0 V before the next angle, so there is never an energised angle jump.
    - With a constant voltage magnitude, the true current magnitude is the same at every angle. A 2θ pattern in the measured magnitude indicates a sensor gain mismatch, and 1θ an offset.
    - Phase-resistance imbalance also gives 2θ; this is a stated limitation.
-3. **Ripple map:**
-   - the speed loop (DTC on, no feed-forward) at +10 rpm, 1 s settle, then 3 mechanical turns; then −10 rpm, 1 s settle, 3 turns;
-   - iq_ref (the speed PI output) is accumulated in 256 mechanical bins (16 counts each) per direction, as int32 mA sums and uint16 counts;
-   - publication is by an atomic ready flag; the ISR does not touch the tables until the thread releases them.
+3. **Ripple map: a position-loop sweep** (revised after bench run 1, where the 10 rpm speed-loop map went stick-slip):
+   - A PID on the calibrated position error (target − measured, counts) sets iq; the current loop runs at the calibrated angle with DTC on and no feed-forward.
+   - The target moves at 410 counts/s (about 6 rpm): hold 0.5 s, then 2 turns forward; hold 0.5 s, then 2 turns back.
+   - Gains: kp = J·w²/Kt, kd = 2ζ·J·w/Kt, ki = kp·w/5, with the assumed J = 1.5e-5, w = 2π·10 Hz, ζ = 0.8. That gives 4.19 mA/count, 7.28 mA/rpm and 52.6 mA/(count·s); integral ±0.3 A, output ±0.5 A.
+   - **J is not measured.** A pulse test is dominated by the 3–4 mNm cogging at any current that stays below the overspeed trip for an unknown J. The simulation covers J × 1/3 and × 3 instead.
+   - iq is accumulated per mechanical bin of the *measured* position (256 bins × 2 directions; int32 mA sums, uint16 counts).
+   - The run aborts on a position error above 400 counts (`COG_SLIP`).
+   - Publication is by an atomic ready flag; the ISR does not touch the tables until the thread releases them.
 
 **Thread side (`src/cog_proc.{c,h}`, pure C):**
 - cog = (fwd + rev)/2 minus its mean, and friction = the mean of (fwd − rev)/2;
@@ -39,7 +43,7 @@ The sequence:
 
 ## Command block
 
-`foc_ctrl_cmd` at **`0x200027F4`**:
+`foc_ctrl_cmd` at **`0x20002808`** (firmware with the position sweep):
 
 | Field | Offset |
 |---|---|
@@ -62,9 +66,9 @@ The sequence:
 
 | | Worker state | Final |
 |---|---|---|
-| CCM `.ccm_text_reloc` | 10200 / 10240 B | **9544 / 10240 B (696 B free)** |
-| SRAM data+bss | 20044 / 22528 B | **16548 / 22528 B** |
-| Flash text+data | 85940 | 85672 / 98304 B |
+| CCM `.ccm_text_reloc` | 10200 / 10240 B | **9680 / 10240 B (560 B free)** |
+| SRAM data+bss | 20044 / 22528 B | **16568 / 22528 B** |
+| Flash text+data | 85940 | 85832 / 98304 B |
 
 **SRAM:** the boot bench kept a permanent 3988 B fixture (a full `cog_map_t` plus a processed copy) just to time the map period and the thread processing. It was replaced by a 512 B feed-forward table. The map period is measured on the target by the ISR segment timing in mode 8 instead.
 
@@ -85,19 +89,27 @@ The sequence:
 
 `ctest`: **12/12 passed** (test_cog: processing, feed-forward, sequence, aborts; test_foc_ctrl_calib: map permission/abort, cff latching/refusal/invalidation, plus all earlier tests).
 
-Closed-loop simulation (`sim_stage7_speed`, with a 14/turn cogging term of 3 mNm added, and the same 10 rpm map procedure in simulation; the map took 53.5 s):
+Closed-loop simulation (`sim_stage7_speed`): a 14/turn cogging term of 3 mNm, and **2 mNm stiction** (breakaway; the earlier model had only 0.5 mNm, which is why its 10 rpm speed map did not show the bench's stick-slip). The full mode-8 sequencer runs in simulation (about 56.5 s).
+
+| Simulated J | Map | Max position error |
+|---|---|---|
+| 0.5e-5 | done | 50 counts |
+| 1.5e-5 | done | 57 counts |
+| 4.5e-5 | done | 74 counts |
+
+The 14/turn harmonic is recovered as 145 mA (true 138 mA, 5 % high).
 
 | Speed | Ripple RMS, ff off | Ripple RMS, ff on | Reduction |
 |---|---|---|---|
-| 60 rpm | 18.83 rpm | 3.49 rpm | 5.39× |
-| 100 rpm | 12.27 rpm | 2.25 rpm | 5.45× |
+| 60 rpm | 18.82 rpm | 2.30 rpm | 8.19× |
+| 100 rpm | 12.26 rpm | 1.58 rpm | 7.75× |
 
 ## Checks
 
 | Check | Result |
 |---|---|
 | ARM pristine build (`west build -p always … -DBUILD_VERSION=v4.4.2`) | OK |
-| CI gates from `.github/workflows/ci.yml`, run locally | rc 0: `budgets: flash 85672/98304 B; SRAM data+bss 16548/22528 B; CCM 9544/10240 B`, plus the allocation, GPIO and config gates |
+| CI gates from `.github/workflows/ci.yml`, run locally | rc 0: `budgets: flash 85832/98304 B; SRAM data+bss 16568/22528 B; CCM 9680/10240 B`, plus the allocation, GPIO and config gates |
 | clang-format `--dry-run --Werror` on all changed files | OK |
 | clang-tidy on the changed `src/*.c` | only `bugprone-signed-bitwise` inside Zephyr `LOG_*` macro expansions (main.c, foc_bench.c), the pre-existing GPIO/clock macro warnings in pwm_adc.c, and the known `K_THREAD_STACK_DEFINE` branch-clone; none in cog_map.c, cog_proc.c, foc_ctrl.c, motor_ident.c |
 

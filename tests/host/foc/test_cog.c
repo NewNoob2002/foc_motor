@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 #include <math.h>
+#include <stdlib.h>
 #include <string.h>
 #include "cog_map.h"
 #include "cog_proc.h"
@@ -105,27 +106,41 @@ static void test_sequence(void) {
         }
         CHECK(n >= 2399U && n <= 2403U);
     }
-    CHECK(m.raw.phase == COG_FORWARD_SETTLE);
+    CHECK(m.raw.phase == COG_FORWARD_SETTLE && cog_map_current(&m));
+    /* An ideal rotor that follows the target: direction is -1, so the calibrated
+     * position rises while the raw count falls. Position and target start at 0
+     * with the raw count 0 (it stayed 0 through the gain check).
+     */
+    in.alpha = 0.0f;
+    in.beta = 0.0f;
     for (uint32_t d = 0U; d < 2U; d++) {
-        in.rpm = d == 0U ? 10.0f : -10.0f;
-        in.iq = d == 0U ? 0.25f : -0.125f;
-        for (uint32_t n = 0U; n < COG_SPEED_SETTLE_N; n++) {
+        in.rpm = 0.0f;
+        for (uint32_t n = 0U; n < COG_POS_HOLD_N; n++) {
+            CHECK(m.raw.phase == (d == 0U ? COG_FORWARD_SETTLE : COG_REVERSE_SETTLE));
             cog_map_step(&m, &in);
         }
         CHECK(m.raw.phase == (d == 0U ? COG_FORWARD : COG_REVERSE));
-        /* One count per period is deliberately fast but preserves a plausible
-         * supplied speed: indexing and signed displacement are tested directly.
-         */
-        for (uint32_t n = 0U; n < 4096U * FOC_CTRL_MAP_REVS; n++) {
-            in.enc = (in.enc + (d == 0U ? 4095U : 1U)) & 4095U;
+        in.rpm = d == 0U ? 6.0f : -6.0f;
+        uint32_t n = 0U;
+        while (m.raw.phase == (d == 0U ? COG_FORWARD : COG_REVERSE) && n++ < 1000000U) {
             cog_map_step(&m, &in);
+            int32_t follow = (int32_t)lroundf((float)m.tgt_q16 * (1.0f / 65536.0f));
+            in.enc = (uint32_t)(-follow) & 4095U;
+            CHECK(fabsf((float)m.tgt_q16 * (1.0f / 65536.0f) - (float)m.pos) < 1.5f);
+            /* The one-period follow lag (0.02 count) integrates to about 20 mA over the 20 s sweep. */
+            CHECK(fabsf(m.iq_cmd) < 0.05f);
         }
+        /* 2 turns at 410 counts/s: about 20 s. */
+        CHECK(n > 390000U && n < 410000U);
     }
     const cog_raw_t* held = cog_map_get(&m);
     CHECK(held != NULL && held->phase == COG_DONE);
+    /* About 780 periods per bin per turn at 410 counts/s; mean iq near 0 for an ideal follower. */
     for (uint32_t b = 0U; b < FOC_CTRL_MAP_BINS; b++) {
-        CHECK(m.raw.count[0][b] == 48U && m.raw.count[1][b] == 48U);
-        CHECK(m.raw.sum[0][b] == 48 * 250 && m.raw.sum[1][b] == -48 * 125);
+        for (uint32_t d = 0U; d < 2U; d++) {
+            CHECK(m.raw.count[d][b] > 1400U && m.raw.count[d][b] < 1750U);
+            CHECK(abs(m.raw.sum[d][b]) < 20 * (int32_t)m.raw.count[d][b]);
+        }
     }
     cog_raw_t saved = m.raw;
     CHECK(!cog_map_start(&m, true, true, 0.1f, 1, 0U));
@@ -162,11 +177,12 @@ static void test_aborts(void) {
                 in.alpha = NAN;
                 break;
             case COG_SLIP:
+                /* 399 counts behind still runs; 401 aborts. */
                 m.raw.phase = COG_FORWARD;
-                for (uint32_t n = 0U; n < 20000U; n++) {
-                    cog_map_step(&m, &in);
-                }
+                m.tgt_q16 = 399 * 65536;
+                cog_map_step(&m, &in);
                 CHECK(cog_map_get(&m) == NULL);
+                m.tgt_q16 = 401 * 65536;
                 break;
             case COG_TIMEOUT:
                 m.ticks = COG_TIMEOUT_N;
