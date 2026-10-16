@@ -52,6 +52,8 @@ typedef enum {
     STAGE_SINCOS_DBL, /* sin + cos in double, for comparison */
     STAGE_CURRENT,    /* limited mode-4 kernel plus calibrated angle and speed window */
     STAGE_CTRL,       /* complete unpowered mode-4 foc_ctrl_step */
+    STAGE_SPEED,      /* 1 ms estimator + speed PI */
+    STAGE_CTRL_SPEED, /* complete unpowered mode-7 period, including 1 ms update */
     STAGE_IDENT_START,
     STAGE_IDENT_SERVO,
     STAGE_IDENT_R_FIT,
@@ -72,6 +74,8 @@ static const char* const stage_names[STAGE_COUNT] = {
     [STAGE_SINCOS_DBL] = "sin+cos double",
     [STAGE_CURRENT] = "current capped",
     [STAGE_CTRL] = "mode4 full off",
+    [STAGE_SPEED] = "speed 1ms",
+    [STAGE_CTRL_SPEED] = "mode7 full off",
     [STAGE_IDENT_START] = "ident start",
     [STAGE_IDENT_SERVO] = "ident servo",
     [STAGE_IDENT_R_FIT] = "ident R fit",
@@ -170,6 +174,7 @@ static void measure_cordic(void) {
 static struct {
     foc_current_t cc;
     foc_ctrl_speed_t speed;
+    foc_speed_loop_t speed_loop;
     uint32_t encoder;
     foc_current_out_t out;
 } current_ctx;
@@ -192,6 +197,13 @@ static __noinline void run_current(void) {
     foc_current_step_ff(&current_ctx.cc, abc, sc, ref, ctx.in->vbus, FOC_VECTORS_DT_S, comp, 1.0f, &current_ctx.out);
 }
 
+/** Time the exact 1 ms estimator rollover and speed PI used by production control. */
+static __noinline void run_speed(void) {
+    (void)foc_ctrl_speed_step(&current_ctx.speed, current_ctx.encoder);
+    foc_speed_loop_update(&current_ctx.speed_loop, 100.0f, (float)current_ctx.speed.counts * FOC_CTRL_SPD_COUNTS_TO_RPM,
+                          false);
+}
+
 /** Prepare both speed-window rollover and ordinary samples outside the measured interval. */
 static void prepare_current(size_t vector) {
     current_ctx.cc.pi_d.kp = 70e-6f * 6283.18530718f;
@@ -201,10 +213,24 @@ static void prepare_current(size_t vector) {
     current_ctx.cc.pi_d.integral = ctx.in->int_d;
     current_ctx.cc.pi_q.integral = ctx.in->int_q;
     current_ctx.encoder = (uint32_t)vector * 4095U / FOC_VECTORS_COUNT;
-    current_ctx.speed.previous = current_ctx.encoder - 1U;
-    current_ctx.speed.periods = (vector & 1U) != 0U ? FOC_CTRL_SPEED_PERIODS - 1U : 0U;
+    foc_ctrl_speed_reset(&current_ctx.speed, current_ctx.encoder - 1U);
+    foc_speed_loop_reset(&current_ctx.speed_loop);
+    current_ctx.speed.periods = (vector & 1U) != 0U ? FOC_CTRL_SPD_DIV - 1U : 0U;
     current_ctx.speed.delta = 204;
     current_ctx.speed.counts = 0;
+}
+
+/** Prepare an ordinary or twentieth mode-7 period without sending outputs to hardware. */
+static void prepare_speed_ctrl(size_t vector) {
+    foc_ctrl_cmd.mode = FOC_MODE_IDLE;
+    foc_ctrl_step(&ctrl_sample, &ctrl_output);
+    foc_ctrl_cmd.mode = FOC_MODE_SPEED;
+    foc_ctrl_step(&ctrl_sample, &ctrl_output);
+    foc_ctrl_cmd.spd_rpm = 100;
+    foc_ctrl_cmd.step_seq++;
+    for (uint32_t n = 0U; n < ((vector & 1U) != 0U ? FOC_CTRL_SPD_DIV - 1U : 0U); n++) {
+        foc_ctrl_step(&ctrl_sample, &ctrl_output);
+    }
 }
 
 /* Synthetic numeric state only: these stages never call the BSP or change commands. */
@@ -347,6 +373,8 @@ static void (*const stage_fns[STAGE_COUNT])(void) = {
     [STAGE_SINCOS_DBL] = run_sincos_dbl,
     [STAGE_CURRENT] = run_current,
     [STAGE_CTRL] = run_ctrl,
+    [STAGE_SPEED] = run_speed,
+    [STAGE_CTRL_SPEED] = run_ctrl,
     [STAGE_IDENT_START] = run_ident_start,
     [STAGE_IDENT_SERVO] = run_ident_step,
     [STAGE_IDENT_R_FIT] = run_ident_step,
@@ -388,6 +416,17 @@ static void measure(void) {
             for (size_t s = 0; s < STAGE_COUNT; s++) {
                 if (s == STAGE_CURRENT) {
                     prepare_current(i);
+                }
+                if (s == STAGE_SPEED) {
+                    prepare_current(i);
+                    current_ctx.speed.periods = FOC_CTRL_SPD_DIV - 1U;
+                }
+                if (s == STAGE_CTRL) {
+                    foc_ctrl_cmd.mode = FOC_MODE_CURRENT;
+                    foc_ctrl_step(&ctrl_sample, &ctrl_output);
+                }
+                if (s == STAGE_CTRL_SPEED) {
+                    prepare_speed_ctrl(i);
                 }
                 if (s >= STAGE_IDENT_START) {
                     prepare_ident((stage_t)s, i);

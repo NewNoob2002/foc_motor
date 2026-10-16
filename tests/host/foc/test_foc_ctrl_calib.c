@@ -415,8 +415,168 @@ static void test_dtc_latch(void) {
     }
 }
 
+/** Check sequence latching, symmetric clamps, 1 kHz hold/ramp and reset on mode entry. */
+static void test_speed_references(void) {
+    pwm_adc_sample_t sample = prepare_control();
+    pwm_adc_cmd_t cmd;
+    foc_ctrl_snapshot_t snap;
+    finish_ident(&sample, -1, 123U);
+    foc_ctrl_cmd.mode = FOC_MODE_SPEED;
+    foc_ctrl_cmd.spd_rpm = 150;
+    foc_ctrl_cmd.step_seq = 42U;
+    foc_ctrl_step(&sample, &cmd);
+    foc_ctrl_snapshot(&snap);
+    CHECK(snap.mode == FOC_MODE_SPEED && !snap.mode_refused && cmd.power_on);
+    CHECK(snap.spd_target_rpm == 0 && snap.spd_ref_rpm == 0.0f && snap.i_q_ref == 0.0f);
+    CHECK(snap.i_d_ref == 0.0f);
+    CHECK_NEAR(snap.cc_kp, 70e-6 * 6283.18530718, 1e-6);
+    foc_ctrl_cmd.spd_rpm = INT32_MAX;
+    for (uint32_t n = 0U; n < 20U; n++) {
+        foc_ctrl_step(&sample, &cmd);
+    }
+    foc_ctrl_snapshot(&snap);
+    CHECK(snap.spd_target_rpm == 0 && snap.spd_ref_rpm == 0.0f);
+    foc_ctrl_cmd.step_seq++;
+    float last_iq = 0.0f;
+    for (uint32_t n = 1U; n <= 10000U; n++) {
+        foc_ctrl_step(&sample, &cmd);
+        foc_ctrl_snapshot(&snap);
+        CHECK(snap.spd_target_rpm == 200);
+        uint32_t updates = n / 20U;
+        CHECK_NEAR(snap.spd_ref_rpm, (float)updates * 0.4f, 0.001);
+        CHECK(snap.i_d_ref == 0.0f && fabsf(snap.i_q_ref) <= 0.5f);
+        if (n % 20U != 0U) {
+            CHECK(snap.i_q_ref == last_iq);
+        }
+        last_iq = snap.i_q_ref;
+        foc_ctrl_cmd.spd_rpm = -100; /* Edits alone never change the latched target. */
+        CHECK(hypotf(snap.v_d, snap.v_q) <= 1.000001f);
+    }
+    foc_ctrl_cmd.spd_rpm = INT32_MIN;
+    foc_ctrl_cmd.step_seq++;
+    for (uint32_t n = 0U; n < 100U; n++) {
+        foc_ctrl_step(&sample, &cmd);
+    }
+    foc_ctrl_snapshot(&snap);
+    CHECK(snap.spd_target_rpm == -200);
+    CHECK_NEAR(snap.spd_ref_rpm, 198.0, 0.001);
+    foc_ctrl_cmd.mode = FOC_MODE_IDLE;
+    foc_ctrl_step(&sample, &cmd);
+    foc_ctrl_cmd.mode = FOC_MODE_SPEED;
+    foc_ctrl_step(&sample, &cmd);
+    foc_ctrl_snapshot(&snap);
+    CHECK(snap.spd_ref_rpm == 0.0f && snap.spd_target_rpm == 0 && snap.i_q_ref == 0.0f);
+    CHECK(snap.speed_counts == 0 && snap.speed_rpm == 0.0f);
+}
+
+/** Verify capture PRE boundary, exact decimation, old/new headers and deferred sequences. */
+static void test_speed_capture(void) {
+    pwm_adc_sample_t sample = prepare_control();
+    pwm_adc_cmd_t cmd;
+    foc_ctrl_snapshot_t snap;
+    finish_ident(&sample, -1, 0U);
+    foc_ctrl_cmd.mode = FOC_MODE_SPEED;
+    foc_ctrl_step(&sample, &cmd);
+    foc_ctrl_cmd.spd_rpm = 100;
+    foc_ctrl_cmd.spd_step = 1U;
+    foc_ctrl_cmd.dtc = 1U;
+    foc_ctrl_cmd.step_seq++;
+    for (uint32_t n = 1U; n <= FOC_CTRL_CAPTURE_LEN * 20U; n++) {
+        /* 60 rpm in the calibrated frame: raw encoder must decrease for direction=-1. */
+        sample.enc_count = (0U - (n * 4096U / 20000U)) & 4095U;
+        foc_ctrl_step(&sample, &cmd);
+        foc_ctrl_snapshot(&snap);
+        if (n < (FOC_CTRL_CAPTURE_PRE + 1U) * 20U) {
+            CHECK(snap.spd_ref_rpm == 0.0f && !snap.dtc);
+        } else {
+            CHECK(snap.spd_ref_rpm == 100.0f && snap.dtc && !snap.dtc_refused);
+        }
+        CHECK(snap.spd_target_rpm == 100 && snap.i_d_ref == 0.0f);
+        if (n >= 200U) {
+            CHECK_NEAR(snap.speed_rpm, 60.0, 1.46485);
+        }
+        if (n < FOC_CTRL_CAPTURE_LEN * 20U) {
+            CHECK(foc_ctrl_capture_get() == NULL);
+        }
+        foc_ctrl_cmd.spd_rpm = 150;
+        foc_ctrl_cmd.dtc = 0U;
+        foc_ctrl_cmd.step_seq = 2U; /* Busy capture defers this request. */
+    }
+    const foc_ctrl_capture_t* cap = foc_ctrl_capture_get();
+    CHECK(cap != NULL);
+    if (cap != NULL) {
+        CHECK(cap->kind == 2U && cap->seq == 1U && cap->old_spd_rpm == 0 && cap->new_spd_rpm == 100);
+        CHECK(cap->dtc && cap->power_on);
+        CHECK(cap->ic_ma[FOC_CTRL_CAPTURE_PRE] > 0);
+        for (uint32_t k = 10U; k < FOC_CTRL_CAPTURE_LEN; k++) {
+            CHECK(cap->ia_ma[k] >= 585 && cap->ia_ma[k] <= 615);
+            CHECK(cap->ic_ma[k] >= -500 && cap->ic_ma[k] <= 500);
+        }
+        int16_t saved = cap->ic_ma[0];
+        for (uint32_t n = 0U; n < 100U; n++) {
+            foc_ctrl_step(&sample, &cmd);
+        }
+        CHECK(cap->seq == 1U && cap->ic_ma[0] == saved);
+    }
+    foc_ctrl_capture_release();
+    for (uint32_t n = 0U; n < FOC_CTRL_CAPTURE_LEN * 20U; n++) {
+        foc_ctrl_step(&sample, &cmd);
+    }
+    cap = foc_ctrl_capture_get();
+    CHECK(cap != NULL && cap->seq == 2U && cap->old_spd_rpm == 100 && cap->new_spd_rpm == 150);
+    CHECK(cap != NULL && !cap->dtc);
+    foc_ctrl_capture_release();
+}
+
+/** Apply the same strict calibration and signed 10 ms overspeed gates to mode 7. */
+static void test_speed_permission_and_trip(void) {
+    const float motors[][2] = {{0.02f, 70e-6f}, {2.0f, 70e-6f}, {0.2f, 10e-6f},
+                               {0.2f, 5e-3f},   {NAN, 70e-6f},  {0.2f, NAN}};
+    for (size_t k = 0U; k < sizeof(motors) / sizeof(motors[0]); k++) {
+        pwm_adc_sample_t sample = prepare_control();
+        pwm_adc_cmd_t cmd;
+        foc_ctrl_snapshot_t snap;
+        result_r = motors[k][0];
+        result_l = motors[k][1];
+        finish_ident(&sample, 1, 0U);
+        foc_ctrl_cmd.mode = FOC_MODE_SPEED;
+        foc_ctrl_step(&sample, &cmd);
+        foc_ctrl_snapshot(&snap);
+        CHECK(snap.mode_refused && snap.mode == FOC_MODE_IDLE);
+        sample.power_on = false;
+        foc_ctrl_cmd.arm = 0U;
+        foc_ctrl_step(&sample, &cmd);
+        foc_ctrl_step(&sample, &cmd);
+        foc_ctrl_snapshot(&snap);
+        CHECK(!snap.mode_refused && snap.mode == FOC_MODE_SPEED);
+    }
+    const int32_t counts[] = {-206, -205, 205, 206};
+    for (uint32_t power = 0U; power <= 1U; power++) {
+        for (size_t k = 0U; k < sizeof(counts) / sizeof(counts[0]); k++) {
+            pwm_adc_sample_t sample = prepare_control();
+            pwm_adc_cmd_t cmd;
+            finish_ident(&sample, -1, 0U);
+            sample.power_on = power != 0U;
+            if (power == 0U) {
+                foc_ctrl_cmd.arm = 0U;
+            }
+            foc_ctrl_cmd.mode = FOC_MODE_SPEED;
+            foc_ctrl_step(&sample, &cmd);
+            for (uint32_t n = 1U; n <= 400U; n++) {
+                sample.enc_count = (uint32_t)(counts[k] * (int32_t)n / 200) & 4095U;
+                foc_ctrl_step(&sample, &cmd);
+                bool trip = power != 0U && n >= 200U && (counts[k] < -205 || counts[k] > 205);
+                CHECK(cmd.trip == (trip ? PWM_ADC_FAULT_OVERSPEED : 0U));
+            }
+        }
+    }
+}
+
 /** Run calibration and powered-current fixtures against the production ISR implementation. */
 int main(void) {
+    test_speed_references();
+    test_speed_capture();
+    test_speed_permission_and_trip();
     test_dtc_latch();
     test_current_permission();
     test_current_references();

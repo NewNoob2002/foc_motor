@@ -42,6 +42,17 @@
  *   samples before the new command applies at top PRE. Busy captures defer the
  *   next sequence until released. Speed above 205 counts/10 ms trips when powered.
  *   Integrals reset while power is off.
+ * - FOC_MODE_SPEED: same permission, calibrated angle, DTC and 1 V current loop
+ *   as CURRENT, with id=0 and iq from a 1 kHz speed PI limited to +/-0.5 A.
+ *   Entry clears PI, reference and estimator. Write spd_rpm/dtc/spd_step before
+ *   changing step_seq. Ordinary commands ramp at 400 rpm/s; spd_step=1 requests
+ *   a 256 ms kind-2 capture and applies the latched reference as a step at
+ *   sample PRE. Busy captures defer sequences until release. Speed and iq_ref
+ *   are recorded at the same 1 kHz update; iq reaches PWM one top (50 us) later.
+ *   Speed feedback follows the calibrated mechanical direction while powered;
+ *   unpowered checks use raw encoder direction. The rolling 10 ms window has
+ *   about 5 ms delay and 1.46484375 rpm resolution. Overspeed is checked at
+ *   the existing 10 ms cadence in both current-loop modes.
  *
  * The power stage (Stage 7) switches on only through src/power_guard.c:
  * cmd.arm = FOC_CTRL_ARM_KEY, offsets calibrated, VBUS 14.0-16.5 V for
@@ -61,6 +72,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "foc_speed.h"
 #include "motor_ident.h"
 #include "pwm_adc.h"
 
@@ -83,10 +95,9 @@
 #define FOC_CTRL_ID_MAX_A             1.0f
 #define FOC_CTRL_IQ_MAX_A             0.5f
 #define FOC_CTRL_OVERSPEED_RPM        300U
-#define FOC_CTRL_SPEED_PERIODS        200U /* 10 ms at 20 kHz */
-#define FOC_CTRL_OVERSPEED_COUNTS     205  /* counts per 10 ms; trip strictly above */
+#define FOC_CTRL_OVERSPEED_COUNTS     205 /* counts per 10 ms; trip strictly above */
 
-#define FOC_CTRL_CAPTURE_LEN          256U /* 12.8 ms */
+#define FOC_CTRL_CAPTURE_LEN          256U /* 12.8 ms; kind 2: 256 ms */
 #define FOC_CTRL_CAPTURE_PRE          16U
 #define FOC_CTRL_CAPTURE_ON           128U /* 6.4 ms */
 
@@ -98,6 +109,7 @@ typedef enum {
     FOC_MODE_CURRENT = 4,
     FOC_MODE_IDENT = 5,
     FOC_MODE_OPENLOOP = 6,
+    FOC_MODE_SPEED = 7,
 } foc_mode_t;
 
 typedef struct {
@@ -110,6 +122,8 @@ typedef struct {
     int32_t id_ma;     /* +24: write both references, then change step_seq to latch */
     int32_t iq_ma;     /* +28: mA, clamped to +/-FOC_CTRL_IQ_MAX_A */
     uint32_t dtc;      /* +32: 0 off, 1 on; latched with refs on step_seq change */
+    int32_t spd_rpm;   /* +36: signed calibrated-frame rpm, clamped to +/-200 */
+    uint32_t spd_step; /* +40: 1 = kind-2 step capture, 0 = ordinary ramp; latched with sequence */
 } foc_ctrl_cmd_t;
 
 extern volatile foc_ctrl_cmd_t foc_ctrl_cmd;
@@ -143,10 +157,13 @@ typedef struct {
     float ic_f;
     float i_d_ref; /* A, latched reference */
     float i_q_ref;
-    float cc_kp;          /* V/A */
-    float cc_ki;          /* V/(A s) */
-    int32_t speed_counts; /* signed mechanical encoder counts per 10 ms */
-    float i_d;            /* A, this step */
+    float cc_kp;            /* V/A */
+    float cc_ki;            /* V/(A s) */
+    int32_t speed_counts;   /* signed mechanical encoder counts per rolling 10 ms */
+    float speed_rpm;        /* calibrated-frame rpm in powered operation */
+    float spd_ref_rpm;      /* ramped reference */
+    int32_t spd_target_rpm; /* sequence-latched reference */
+    float i_d;              /* A, this step */
     float i_q;
     float v_d; /* V, applied from the next counter top */
     float v_q;
@@ -159,7 +176,9 @@ typedef struct {
 /* One step capture; sample k is the current measured at the counter top of period k. */
 typedef struct {
     uint32_t seq;  /* cmd.step_seq that started it */
-    uint32_t kind; /* 0: IA/IC voltage step, 1: id/iq current step */
+    uint32_t kind; /* 0: IA/IC voltage step, 1: id/iq current step, 2: speed step at 1 kHz */
+    int32_t old_spd_rpm;
+    int32_t new_spd_rpm;
     int32_t old_id_ma;
     int32_t old_iq_ma;
     int32_t new_id_ma;
@@ -170,7 +189,7 @@ typedef struct {
     bool power_on;    /* power stage on during the whole capture */
     bool dtc;         /* accepted state for the new references at top PRE */
     bool dtc_refused; /* V0 was outside the strict (0.05, 0.6) V window */
-    /* Storage is reused as id/iq in kind 1; samples retain signed mA units. */
+    /* Kind 1: id/iq in mA; kind 2: speed in deci-rpm / iq reference in mA. */
     int16_t ia_ma[FOC_CTRL_CAPTURE_LEN];
     int16_t ic_ma[FOC_CTRL_CAPTURE_LEN];
 } foc_ctrl_capture_t;

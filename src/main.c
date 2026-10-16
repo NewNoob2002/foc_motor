@@ -75,6 +75,7 @@ static const char* const mode_names[] = {
     [FOC_MODE_CURRENT] = "current loop (calibrated dq)",
     [FOC_MODE_IDENT] = "ident",
     [FOC_MODE_OPENLOOP] = "openloop (rotating vector, ramped)",
+    [FOC_MODE_SPEED] = "speed loop (calibrated dq)",
 };
 
 /* Thousandths, truncated toward zero; the inputs are a few units at most. */
@@ -131,7 +132,12 @@ static __noinline void report(uint32_t n, const pwm_adc_stats_t* st, bool timing
     LOG_INF("  ident phase %u", (unsigned int)fc->ident_phase);
     LOG_INF("  i_d %d mA, i_q %d mA, v_d %d mV, v_q %d mV, limited %d", milli(fc->i_d), milli(fc->i_q), milli(fc->v_d),
             milli(fc->v_q), fc->limited ? 1 : 0);
-    if (fc->mode == FOC_MODE_CURRENT) {
+    if (fc->mode == FOC_MODE_SPEED) {
+        LOG_INF("  speed kp %d uA/rpm, ki %d uA/(rpm s), ref %d milli-rpm, latched %d rpm",
+                (int32_t)(FOC_CTRL_SPD_KP * 1e6f), (int32_t)(FOC_CTRL_SPD_KI * 1e6f), milli(fc->spd_ref_rpm),
+                fc->spd_target_rpm);
+    }
+    if (fc->mode == FOC_MODE_CURRENT || fc->mode == FOC_MODE_SPEED) {
         LOG_INF("  cc refs id %d iq %d mA, kp %d mV/A, ki %d V/(A s), speed %d rpm", milli(fc->i_d_ref),
                 milli(fc->i_q_ref), milli(fc->cc_kp), (int32_t)fc->cc_ki, fc->speed_counts * 6000 / 4096);
     }
@@ -148,9 +154,31 @@ static __noinline void report_power(const pwm_adc_stats_t* st, const foc_ctrl_sn
             fc->enc_count % ENCODER_COUNTS_PER_REV);
 }
 
+/** Emit speed telemetry at 100 ms intervals, including while a capture is being dumped. */
+static __noinline void report_speed(foc_ctrl_snapshot_t* fc) {
+    static int64_t next_ms;
+    int64_t now = k_uptime_get();
+
+    if (now < next_ms) {
+        return;
+    }
+    next_ms = (now / ROT_PERIOD_MS + 1) * ROT_PERIOD_MS;
+    foc_ctrl_snapshot(fc);
+    if (fc->mode == FOC_MODE_SPEED) {
+        LOG_INF("spd %u %d %d %d %d", fc->steps, (int32_t)fc->spd_ref_rpm, (int32_t)(fc->speed_rpm * 10.0f),
+                milli(fc->i_q_ref), milli(fc->i_q));
+    }
+}
+
 /* Prints a finished step capture, then hands the buffer back to the ISR. */
-static __noinline void dump_capture(const foc_ctrl_capture_t* c) {
-    if (c->kind == 1U) {
+static __noinline void dump_capture(const foc_ctrl_capture_t* c, foc_ctrl_snapshot_t* fc) {
+    if (c->kind == 2U) {
+        LOG_INF("cap_begin seq %u, kind 2, refs %d -> %d rpm, VBUS %d mV, power %s, %u samples at 1 kHz, "
+                "step at %u, dtc %s%s",
+                c->seq, c->old_spd_rpm, c->new_spd_rpm, milli(c->vbus), c->power_on ? "on" : "OFF",
+                FOC_CTRL_CAPTURE_LEN, FOC_CTRL_CAPTURE_PRE, c->dtc ? "on" : "off",
+                c->dtc_refused ? " (refused: implausible V0)" : "");
+    } else if (c->kind == 1U) {
         LOG_INF("cap_begin seq %u, kind 1, refs id %d -> %d iq %d -> %d mA, VBUS %d mV, power %s, %u samples, "
                 "step at %u, dtc %s%s",
                 c->seq, c->old_id_ma, c->new_id_ma, c->old_iq_ma, c->new_iq_ma, milli(c->vbus),
@@ -162,12 +190,15 @@ static __noinline void dump_capture(const foc_ctrl_capture_t* c) {
                 FOC_CTRL_CAPTURE_PRE, FOC_CTRL_CAPTURE_ON);
     }
     for (uint32_t k = 0; k < FOC_CTRL_CAPTURE_LEN; k++) {
-        if (c->kind == 1U) {
+        if (c->kind == 2U) {
+            LOG_INF("capspd %u %u %d %d", c->seq, k, c->ia_ma[k], c->ic_ma[k]);
+        } else if (c->kind == 1U) {
             LOG_INF("capdq %u %u %d %d", c->seq, k, c->ia_ma[k], c->ic_ma[k]);
         } else {
             LOG_INF("cap %u %u %d %d", c->seq, k, c->ia_ma[k], c->ic_ma[k]);
         }
         k_msleep(CAPTURE_LINE_PAUSE_MS);
+        report_speed(fc);
     }
     LOG_INF("cap_end seq %u", c->seq);
     foc_ctrl_capture_release();
@@ -248,7 +279,7 @@ static void report_loop(void* p1, void* p2, void* p3) {
             "offset calibration %u periods; power stage off",
             PWM_ARR, FOC_CTRL_CAL_SAMPLES);
     LOG_INF("command block foc_ctrl_cmd at %p: arm +0, mode +4, v_mv +8, theta_e +12, step_seq +16, rate_e +20; "
-            "id_ma +24, iq_ma +28, dtc +32; arm key 0x%08x",
+            "id_ma +24, iq_ma +28, dtc +32, spd_rpm +36, spd_step +40; arm key 0x%08x",
             (void*)&foc_ctrl_cmd, FOC_CTRL_ARM_KEY);
 
     /* Drop the start-up window. */
@@ -256,7 +287,7 @@ static void report_loop(void* p1, void* p2, void* p3) {
     bool supervisor_reported = false;
 
     for (uint32_t n = 1;; n++) {
-        k_msleep(ROT_PERIOD_MS);
+        k_msleep((int32_t)(ROT_PERIOD_MS - k_uptime_get() % ROT_PERIOD_MS));
 
         if (!supervisor_reported && pwm_adc_supervisor_tripped()) {
             LOG_ERR("FOC ISR progress below 150 per 10 ms while powered; power stage off, timer stopped until reset");
@@ -270,6 +301,7 @@ static void report_loop(void* p1, void* p2, void* p3) {
         foc_ctrl_snapshot(&fc);
         if (fc.calibrated) {
             report_rot(&fc);
+            report_speed(&fc);
             if (fc.mode == FOC_MODE_OPENLOOP) {
                 report_openloop(&fc);
             }
@@ -286,7 +318,7 @@ static void report_loop(void* p1, void* p2, void* p3) {
         const foc_ctrl_capture_t* c = foc_ctrl_capture_get();
 
         if (c != NULL) {
-            dump_capture(c);
+            dump_capture(c, &fc);
         }
         const foc_ctrl_ident_t* ident = foc_ctrl_ident_get();
 

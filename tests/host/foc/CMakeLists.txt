@@ -61,6 +61,7 @@ target_include_directories(test_motor_ident PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/
 # Exercise production control with board constants and standard C11 atomics, without a Zephyr installation.
 foc_host_executable(test_foc_ctrl test_foc_ctrl.c)
 target_sources(test_foc_ctrl PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../../src/foc_speed.c
   ${CMAKE_CURRENT_SOURCE_DIR}/../../../src/foc_ctrl.c
   ${CMAKE_CURRENT_SOURCE_DIR}/../../../src/motor_ident.c
   ${CMAKE_CURRENT_SOURCE_DIR}/../../../src/power_guard.c)
@@ -71,12 +72,21 @@ target_include_directories(test_foc_ctrl PRIVATE
 foc_host_executable(test_foc_ctrl_calib test_foc_ctrl_calib.c)
 target_link_options(test_foc_ctrl_calib PRIVATE -Wl,--wrap=motor_ident_step)
 target_sources(test_foc_ctrl_calib PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../../src/foc_speed.c
   ${CMAKE_CURRENT_SOURCE_DIR}/../../../src/foc_ctrl.c
   ${CMAKE_CURRENT_SOURCE_DIR}/../../../src/motor_ident.c
   ${CMAKE_CURRENT_SOURCE_DIR}/../../../src/power_guard.c)
 target_include_directories(test_foc_ctrl_calib PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/stubs
   ${CMAKE_CURRENT_SOURCE_DIR}/../../../src)
+foc_host_executable(test_speed test_speed.c)
+target_sources(test_speed PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../../src/foc_speed.c)
+target_include_directories(test_speed PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../../src)
+foc_host_test(test_speed)
+foc_host_executable(sim_stage7_speed sim/sim_stage7_speed.c)
+target_sources(sim_stage7_speed PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../../src/foc_speed.c)
+target_include_directories(sim_stage7_speed PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../../../src)
+foc_host_test(sim_stage7_speed)
 foc_host_executable(sim_current_loop sim/sim_current_loop.c)
 foc_host_executable(sim_svpwm sim/sim_svpwm.c)
 foc_host_executable(sim_speed_loop sim/sim_speed_loop.c)

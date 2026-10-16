@@ -58,7 +58,8 @@ BUILD_ASSERT(offsetof(foc_ctrl_cmd_t, arm) == 0U && offsetof(foc_ctrl_cmd_t, mod
                  && offsetof(foc_ctrl_cmd_t, v_mv) == 8U && offsetof(foc_ctrl_cmd_t, theta_e) == 12U
                  && offsetof(foc_ctrl_cmd_t, step_seq) == 16U && offsetof(foc_ctrl_cmd_t, rate_e) == 20U
                  && offsetof(foc_ctrl_cmd_t, id_ma) == 24U && offsetof(foc_ctrl_cmd_t, iq_ma) == 28U
-                 && offsetof(foc_ctrl_cmd_t, dtc) == 32U,
+                 && offsetof(foc_ctrl_cmd_t, dtc) == 32U && offsetof(foc_ctrl_cmd_t, spd_rpm) == 36U
+                 && offsetof(foc_ctrl_cmd_t, spd_step) == 40U,
              "debugger command layout changed");
 
 volatile foc_ctrl_cmd_t foc_ctrl_cmd;
@@ -100,6 +101,9 @@ typedef struct {
     int32_t iq_ref_ma;
     bool current_powered;
     foc_ctrl_speed_t speed;
+    foc_speed_loop_t speed_loop;
+    int32_t spd_target;
+    float rpm;
     uint32_t ol_phase;    /* Q16 counts, modulo one electrical turn */
     int32_t ol_remainder; /* signed fractional Q16 carry, denominator OL_PERIODS_PER_S */
     float dc_v;           /* DC/open-loop ramp state, V */
@@ -205,10 +209,11 @@ static int16_t to_ma(float amps) {
 
 /* Commanded mode, or FOC_MODE_IDLE if it is unknown or not allowed with the power stage on. */
 static foc_mode_t mode_allowed(uint32_t m, bool power, bool* refused) {
-    bool known = m <= (uint32_t)FOC_MODE_OPENLOOP;
+    bool known = m <= (uint32_t)FOC_MODE_SPEED;
     bool current_ok =
         st.calib_valid && st.calib_r > 0.02f && st.calib_r < 2.0f && st.calib_l > 10e-6f && st.calib_l < 5e-3f;
-    bool forbidden = m == (uint32_t)FOC_MODE_VOLTAGE || (m == (uint32_t)FOC_MODE_CURRENT && !current_ok);
+    bool forbidden = m == (uint32_t)FOC_MODE_VOLTAGE
+                     || ((m == (uint32_t)FOC_MODE_CURRENT || m == (uint32_t)FOC_MODE_SPEED) && !current_ok);
 
     *refused = !known || (power && forbidden);
     return *refused ? FOC_MODE_IDLE : (foc_mode_t)m;
@@ -309,6 +314,60 @@ static void current_capture_sample(foc_dq_t measured, bool power) {
     }
 }
 
+/** Latch a speed command while respecting capture-buffer ownership. */
+static void speed_prepare(float vbus, bool power) {
+    uint32_t seq = foc_ctrl_cmd.step_seq;
+    if (seq == st.step_seen || atomic_get(&cap_state) != CAPTURE_IDLE) {
+        return;
+    }
+    bool step = foc_ctrl_cmd.spd_step == 1U;
+    st.step_seen = seq;
+    int32_t target = foc_ctrl_cmd.spd_rpm;
+    target = MIN(MAX(target, -FOC_CTRL_SPD_MAX_RPM), FOC_CTRL_SPD_MAX_RPM);
+    bool requested = foc_ctrl_cmd.dtc == 1U;
+    bool plausible = st.calib_valid && st.calib_v0 > 0.05f && st.calib_v0 < 0.6f;
+    if (step) {
+        st.cap_idx = 0U;
+        cap.seq = seq;
+        cap.kind = 2U;
+        cap.old_spd_rpm = st.spd_target;
+        cap.new_spd_rpm = target;
+        cap.dtc = requested && plausible;
+        cap.dtc_refused = requested && !plausible;
+        cap.vbus = vbus;
+        cap.power_on = power;
+        (void)atomic_set(&cap_state, CAPTURE_RUNNING);
+    } else {
+        st.dtc = requested && plausible;
+        st.dtc_refused = requested && !plausible;
+    }
+    st.spd_target = target;
+}
+
+/** Update PI and capture at 1 kHz, applying the captured step at sample PRE. */
+static void speed_update(void) {
+    bool capturing = atomic_get(&cap_state) == CAPTURE_RUNNING;
+    bool step = capturing && st.cap_idx >= FOC_CTRL_CAPTURE_PRE;
+    float target = (float)st.spd_target;
+
+    if (capturing && !step) {
+        target = st.speed_loop.ref; /* Preserve the pre-trigger reference, including an unfinished ramp. */
+    }
+    if (step) {
+        st.dtc = cap.dtc;
+        st.dtc_refused = cap.dtc_refused;
+    }
+    foc_speed_loop_update(&st.speed_loop, target, st.rpm, step);
+    if (capturing) {
+        cap.ia_ma[st.cap_idx] = to_ma(st.rpm * 0.01f); /* to_ma scales by 1000: deci-rpm. */
+        cap.ic_ma[st.cap_idx] = to_ma(st.speed_loop.iq);
+        st.cap_idx++;
+        if (st.cap_idx == FOC_CTRL_CAPTURE_LEN) {
+            (void)atomic_set(&cap_state, CAPTURE_DONE);
+        }
+    }
+}
+
 static void calibrate(const pwm_adc_sample_t* sample) {
     st.ia_sum += sample->ia_code;
     st.ic_sum += sample->ic_code;
@@ -369,17 +428,17 @@ void foc_ctrl_step(const pwm_adc_sample_t* sample, pwm_adc_cmd_t* cmd) {
             st.ol_phase = (foc_ctrl_cmd.theta_e % ENCODER_COUNTS_PER_REV) << 16U;
             st.ol_remainder = 0;
         }
-        if (mode == FOC_MODE_CURRENT) {
+        if (mode == FOC_MODE_CURRENT || mode == FOC_MODE_SPEED) {
             st.id_ref_ma = 0;
             st.iq_ref_ma = 0;
             st.dtc = false;
             st.dtc_refused = false;
             st.current_powered = powered;
             st.step_seen = foc_ctrl_cmd.step_seq;
-            st.speed.previous = sample->enc_count;
-            st.speed.periods = 0U;
-            st.speed.delta = 0;
-            st.speed.counts = 0;
+            foc_ctrl_speed_reset(&st.speed, sample->enc_count);
+            foc_speed_loop_reset(&st.speed_loop);
+            st.spd_target = 0;
+            st.rpm = 0.0f;
         }
         pi_reset(powered);
         if (atomic_get(&cap_state) == CAPTURE_RUNNING) {
@@ -420,6 +479,7 @@ void foc_ctrl_step(const pwm_adc_sample_t* sample, pwm_adc_cmd_t* cmd) {
     out.v_dq.d = 0.0f;
     out.v_dq.q = 0.0f;
 
+    bool speed_tick = false;
     switch (mode) {
         case FOC_MODE_OPENLOOP:
             e_count = openloop_angle();
@@ -447,10 +507,17 @@ void foc_ctrl_step(const pwm_adc_sample_t* sample, pwm_adc_cmd_t* cmd) {
             e_count = theta_e_count(sample->enc_count);
             out.v_dq.d = VOLTAGE_MODE_VD_V;
             break;
+        case FOC_MODE_SPEED:
         case FOC_MODE_CURRENT:
             e_count = powered ? theta_meas_count(sample->enc_count) : theta_e_count(sample->enc_count);
             if (!entered) {
-                foc_ctrl_speed_step(&st.speed, sample->enc_count);
+                speed_tick = foc_ctrl_speed_step(&st.speed, sample->enc_count);
+                if (speed_tick) {
+                    st.rpm = (float)st.speed.counts * FOC_CTRL_SPD_COUNTS_TO_RPM;
+                    if (powered && st.calib_direction < 0) {
+                        st.rpm = -st.rpm;
+                    }
+                }
             }
             break;
         default:
@@ -461,16 +528,26 @@ void foc_ctrl_step(const pwm_adc_sample_t* sample, pwm_adc_cmd_t* cmd) {
 
     sincos_e_count(e_count, &sc.sin_theta, &sc.cos_theta);
 
-    if (mode == FOC_MODE_CURRENT) {
+    if (mode == FOC_MODE_CURRENT || mode == FOC_MODE_SPEED) {
         if (st.current_powered != powered) {
             pi_reset(powered);
             st.current_powered = powered;
         }
-        current_capture_prepare(vbus, sample->power_on);
+        if (mode == FOC_MODE_SPEED) {
+            speed_prepare(vbus, sample->power_on);
+            if (atomic_get(&cap_state) == CAPTURE_RUNNING) {
+                cap.power_on = cap.power_on && sample->power_on && gout.power_on;
+            }
+            if (speed_tick) {
+                speed_update();
+            }
+        } else {
+            current_capture_prepare(vbus, sample->power_on);
+        }
         foc_dq_t i_ref;
 
         i_ref.d = (float)st.id_ref_ma * 0.001f;
-        i_ref.q = (float)st.iq_ref_ma * 0.001f;
+        i_ref.q = mode == FOC_MODE_SPEED ? st.speed_loop.iq : (float)st.iq_ref_ma * 0.001f;
         if (!sample->power_on || !gout.power_on) {
             foc_pi_reset(&st.cc.pi_d);
             foc_pi_reset(&st.cc.pi_q);
@@ -489,7 +566,9 @@ void foc_ctrl_step(const pwm_adc_sample_t* sample, pwm_adc_cmd_t* cmd) {
         } else {
             foc_current_step(&st.cc, i_abc, sc, i_ref, vbus_duty, DT_S, &out);
         }
-        current_capture_sample(out.i_dq, sample->power_on);
+        if (mode == FOC_MODE_CURRENT) {
+            current_capture_sample(out.i_dq, sample->power_on);
+        }
         if (!sample->power_on || !gout.power_on) {
             foc_pi_reset(&st.cc.pi_d);
             foc_pi_reset(&st.cc.pi_q);
@@ -533,8 +612,8 @@ void foc_ctrl_step(const pwm_adc_sample_t* sample, pwm_adc_cmd_t* cmd) {
     cmd->power_on = gout.power_on;
     cmd->trip = ((gout.trip & POWER_GUARD_TRIP_OVERCURRENT) != 0U ? PWM_ADC_FAULT_OVERCURRENT : 0U)
                 | ((gout.trip & POWER_GUARD_TRIP_VBUS) != 0U ? PWM_ADC_FAULT_VBUS : 0U);
-    if (powered && mode == FOC_MODE_CURRENT
-        && (st.speed.counts > FOC_CTRL_OVERSPEED_COUNTS || st.speed.counts < -FOC_CTRL_OVERSPEED_COUNTS)) {
+    if (powered && (mode == FOC_MODE_CURRENT || mode == FOC_MODE_SPEED)
+        && (st.speed.trip_counts > FOC_CTRL_OVERSPEED_COUNTS || st.speed.trip_counts < -FOC_CTRL_OVERSPEED_COUNTS)) {
         cmd->trip |= PWM_ADC_FAULT_OVERSPEED;
     }
     if (calibrated) {
@@ -569,10 +648,13 @@ void foc_ctrl_step(const pwm_adc_sample_t* sample, pwm_adc_cmd_t* cmd) {
     snap.ib_f = st.ib_f;
     snap.ic_f = st.ic_f;
     snap.i_d_ref = (float)st.id_ref_ma * 0.001f;
-    snap.i_q_ref = (float)st.iq_ref_ma * 0.001f;
+    snap.i_q_ref = mode == FOC_MODE_SPEED ? st.speed_loop.iq : (float)st.iq_ref_ma * 0.001f;
     snap.cc_kp = st.cc.pi_d.kp;
     snap.cc_ki = st.cc.pi_d.ki;
-    snap.speed_counts = mode == FOC_MODE_CURRENT ? st.speed.counts : 0;
+    snap.speed_counts = (mode == FOC_MODE_CURRENT || mode == FOC_MODE_SPEED) ? st.speed.counts : 0;
+    snap.speed_rpm = st.rpm;
+    snap.spd_ref_rpm = st.speed_loop.ref;
+    snap.spd_target_rpm = st.spd_target;
     snap.i_d = out.i_dq.d;
     snap.i_q = out.i_dq.q;
     snap.v_d = out.v_dq.d;
