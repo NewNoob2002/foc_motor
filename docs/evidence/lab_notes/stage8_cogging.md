@@ -111,3 +111,24 @@ Firmware `fc34266`. The board booted fresh on DCBUS after USB was unplugged (a n
 - There was no fault and no overrun. ISR max 2309 cycles in phase B. One missed period, at the J-Link session connect, with the stage off.
 
 **Decision (user, 2026-10-15):** raise the phase-B cap to 1.0 A (integral 0.8 A). See `docs/evidence/stage8_cogging_software.md`.
+
+## Firmware `75821a6` flashed (2026-10-15)
+
+Phase-B iq cap 1.0 A.
+
+- **Supply change:** clean. The DC session ended at uptime 12:31 with VBUS 15 V, then the board booted again on USB with VBUS 71 mV. No overlap.
+- **Flash:** USB power, VBUS 71 mV checked live just before flashing, probe 63728769, UID `001D0050 42535013 20363130`.
+- **Image:** `fw_75821a6.bin` SHA-256 `c5a297220bc48d56d31b1b7890ce80be9f341456758f7e3979daf4465262dd60`; verify OK.
+- **Command block:** `0x20002808` (unchanged).
+- **Boot benchmarks:**
+
+  | Item | Cycles |
+  |---|---|
+  | Full step | 1496 |
+  | Mode-7 period, unpowered | 1398 |
+  | Feed-forward lookup | 98 |
+  | Idle ISR | ≤ 1254 |
+
+  `vec_compare` PASS.
+- **Mode 8 with the stage off:** phase 11, reason 1. GPIOB ODR 0, GPIOA ODR 0, GPIOC MODER `0xFFFFFFFF`. One missed period at the J-Link session close (the known artefact).
+- Raw: `build/hil/stage8/*75821a6*`.
