@@ -308,6 +308,29 @@ Fresh boot on DCBUS, probe 63728769. Raw: `build/hil/stage7/ccm/` (`run.log`, `r
   - **ISR exec max 2013 cycles (11.8 µs)**, segments 174 / 1631 / 237, against 3279 before CCM and the 3400 budget.
   - No fault.
 
+### Speed-loop firmware `6d856c1` (2026-10-15)
+
+Mode 7 (`FOC_MODE_SPEED`):
+- **Speed estimate:** a rolling 10 ms window updated every 1 ms (1.46 rpm/count, about 5 ms delay).
+- **Speed PI** every 1 ms → iq_ref, limited to ±0.5 A. Gains from an *assumed* J = 1.5e-5 kg·m² at 10 Hz: kp 4.55 mA/rpm, ki 71.4 mA/(rpm·s).
+- **Reference:** `spd_rpm` (+36), at most ±200 rpm, ramped at 400 rpm/s, or applied as a step with `spd_step` (+40) = 1 together with a 1 kHz speed capture.
+- Same current loop, DTC and caps as mode 4; overspeed trip unchanged.
+
+Host simulation (cogging 2 mNm, friction, dead time, quantisation): 0 → 100 rpm rise 17 ms, overshoot 17 %, settled 0.12 s at J = 1.5e-5; stable at J × 1/3 (overshoot about 50–60 %) and × 3 (30 %). Bench steps are therefore kept at ≤ 100 rpm until J is known. Design: `docs/evidence/stage7_speed_loop_software.md`.
+
+Flash on USB power (VBUS 35 mV checked live), SHA-256 `000468a86dffb1b87f6665d0286961fd6f1b80a8ad6bad52f1c8b15f00022fdc`, verify OK. **Command block `0x20001654`** (spd_rpm +36, spd_step +40); test_spin_count/cycles at `0x20000B5C` / `0x20000B60`.
+
+| Resource / timing | Value |
+|---|---|
+| Flash | 79212 B |
+| SRAM | 11520 B |
+| CCM | 9920 / 10240 B (320 B free) |
+| Boot bench: speed 1 ms update | 221 cycles |
+| Boot bench: mode-7 period, unpowered | 1281 cycles |
+| Mode 7 with the stage off: ISR max | 1646 cycles; stage off, pins safe |
+
+`vec_compare` PASS.
+
 ## Next (needs the user's go)
 
 Stage 7 first power, in the roadmap order, stopping at the first surprise:
