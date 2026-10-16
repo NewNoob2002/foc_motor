@@ -43,6 +43,54 @@ Setup: board UID `001D0050 42535013 20363130`; firmware `f2460b5` flashed and ve
 
 Observation: one missed conversion, first reported in report 4, which also says DWT had stopped after the flash session (also seen in Stage 6). This fits debugger interference; the stall length was not measured. The ISR-gap fault (> 17000 DWT cycles between powered ISR entries) and the 10 ms supervisor both count time only while the core runs: DWT CYCCNT and the kernel tick stop during a debug halt, while TIM1 may keep switching at the last duty. So **neither protects against a halt**. **Rule for Stage 7: no halts, no flash sessions and no halting debugger operations while the power stage is on.**
 
+## First power (2026-10-15)
+
+Setup: board UID `001D0050 42535013 20363130`, firmware `f2460b5`; USB unplugged; DCBUS from the bench supply, 15 V, 500 mA limit, OCP on; motor body clamped, shaft free, nothing on it; the user at the supply output button. J-Link (power off, SWD only, JLinkExe V9.84) in **one session kept open** from before arming to after disarming (`build/hil/stage7/first_power/jl.sh`); UART H2 921600. Raw files in `build/hil/stage7/first_power/` (`uart.log`, `jl_session1.out`, `r_steps.csv`, `r_marks.txt`, `arm_idle_marks.txt`, `vec_compare_dcbus.txt`).
+
+J-Link behaviour, measured on USB power before DCBUS: connecting cost 2 missed periods (one 1920-cycle interval); reads over the open session cost nothing; disconnecting stops DWT (cycle figures invalid until the report thread restarts it, up to 1 s). Connecting on DCBUS (stage off) cost none. Hence: connect only with the stage off, disconnect only after disarming.
+
+### Step 1: DCBUS on, stage off
+
+| Check | Result |
+|---|---|
+| Supply | 15.008 V, **0.028 A** (user, supply display) |
+| +12V at U14 pin 1 | **12.5 V** (user, DMM; nominal 12.6 V from the divider) |
+| Firmware | boot clean, no warnings; VBUS 15.03 V (15.007–15.043); offsets IA 1962.74, IC 1996.94 counts (accepted); worst ISR 1918 cycles, 0 overruns, 0 missed; `vec_compare` PASS on this boot |
+| Pins (J-Link) | GPIOB ODR 0, GPIOA ODR 0 (SD1–SD4 low), GPIOC MODER `0xFFFFFFFF` (PC0–PC3 analog). TIM1 BDTR `0x8000` (MOE 1) and CCER `0x511` (CH1–3, CH3N): set by `pwm_adc_init()` by design; with the stage off no pin carries TIM1 (PC0–PC2 analog, SD low). MOE is cleared only by a fault |
+
+### Step 2: arm in idle (about 6 s)
+
+| | Before | Armed | After disarm |
+|---|---|---|---|
+| Firmware | power off | **power ON** (request 1) | power off |
+| SD1 (PB0) / SD2–SD3 (PA1–PA2) | low | **high** | low |
+| PC0–PC2 | analog | TIM1 AF (MODER `0xFFFFFFEA`) | analog |
+| CCR1–3 | 2125 | 2125 (50 %) | 2125 |
+| avg IA / IB / IC | 9 / −18 / 9 mA | 7 / −11 / 3 mA | 7 / −15 / 8 mA |
+| VBUS; worst ISR; faults | 15.03 V; 1917 cycles; none | 15.03 V; 2001 cycles; none | 15.03 V; 1917 cycles; none |
+
+Nothing moved; the current averages did not change.
+
+### Step 3: DC steps at theta_e 0 (R attempt, alignment)
+
+Each step: arm in idle, mode dc at `v_mv`, about 3.5 s, idle, disarm. 0 faults, 0 overruns, 0 missed. Steady-state averages (firmware low-pass, tau 51 ms); baseline IA about 7 mA. B and C each carried about half of A.
+
+| v_mv | avg IA (mA) | ΔIA (mA) | slope over the step (Ω) | encoder |
+|---|---|---|---|---|
+| 50 | 45 | 38 | 1.32 | 3840 |
+| 100 | 72 | 65 | 1.85 | 3839 |
+| 200 | 166 | 159 | 1.06 | 3833 |
+| 300 | 402 | 395 | 0.42 | 3747 |
+| 400 | 840 | 833 | 0.23 | 3742 |
+
+**R not measured.** The current per step keeps growing: the inverter (EG2104 fixed dead time, switching delays) loses a voltage that depends on the current at these levels, comparable to the commanded 0.05–0.4 V. The slope never became constant below 0.85 A, and the next step could have reached the 2 A trip. The supply's 500 mA limit played no part (the motor needs under 0.1 W here).
+
+Cross-check by the user with the supply off: DMM between two phase wires **0.3–0.4 Ω** (not recorded: which pairs, whether the motor was unplugged from the board, whether the lead resistance was subtracted). That suggests 0.15–0.3 Ω line to line, about 0.08–0.15 Ω per phase, in line with the spec's "170" read as 170 mΩ.
+
+Alignment (first estimate): at 300–400 mV the rotor pulled to encoder 3742–3747 (3754 after release): electrical offset about (3745 × 7) mod 4096 = **1639 counts** (144°), to be confirmed at a second angle.
+
+Decision (user, 2026-10-15): identify R, L and the encoder alignment automatically in firmware (current-regulated multi-point R, square-wave L around a DC bias, 90°/0° alignment), with `MOTOR/User/MotorControl/motor_identify.c` as the reference for the idea.
+
 ## Next (needs the user's go)
 
 Stage 7 first power, in the roadmap order, stopping at the first surprise:
