@@ -73,6 +73,7 @@ static const char* const mode_names[] = {
     [FOC_MODE_VOLTAGE] = "voltage (stage 6, 1 V at the encoder angle)",
     [FOC_MODE_CURRENT] = "current loop (stage 6, placeholder gains)",
     [FOC_MODE_IDENT] = "ident",
+    [FOC_MODE_OPENLOOP] = "openloop (rotating vector, ramped)",
 };
 
 /* Thousandths, truncated toward zero; the inputs are a few units at most. */
@@ -87,6 +88,8 @@ static uint32_t duty_e4(float d) {
 
 /* Kept out of line so its log packages live on this frame, not report_loop's. */
 static __noinline void report(uint32_t n, const pwm_adc_stats_t* st, bool timing_valid, const foc_ctrl_snapshot_t* fc) {
+    LOG_INF("  calib_valid %u, direction %d, offset_e %u electrical counts", fc->calib_valid ? 1U : 0U,
+            fc->calib_direction, fc->calib_offset_e);
     if (st->isr_count == 0U) {
         LOG_WRN("report %u: no ISR in this window; fault 0x%x, DMA errors %u, ADC overruns %u", n, st->fault,
                 st->dma_errors, st->adc_overruns);
@@ -187,6 +190,17 @@ static __noinline void report_rot(const foc_ctrl_snapshot_t* fc) {
             duty_e4(fc->duty_a), duty_e4(fc->duty_b), duty_e4(fc->duty_c));
 }
 
+/** Print commanded and calibrated rotor angles at the rotation telemetry cadence. */
+static __noinline void report_openloop(const foc_ctrl_snapshot_t* fc) {
+    if (fc->calib_valid) {
+        int32_t err = (int32_t)((fc->theta_e_count + 2048U - fc->theta_meas_count) & 4095U) - 2048;
+
+        LOG_INF("ol %u %u %u %d", fc->steps, fc->theta_e_count, fc->theta_meas_count, err);
+    } else {
+        LOG_INF("ol %u %u invalid", fc->steps, fc->theta_e_count);
+    }
+}
+
 /* Stage 5 bench first, while no ISR can disturb the timing; then the FOC ISR and its telemetry. */
 static void report_loop(void* p1, void* p2, void* p3) {
     ARG_UNUSED(p1);
@@ -209,7 +223,8 @@ static void report_loop(void* p1, void* p2, void* p3) {
     LOG_INF("FOC ISR on: TIM1 ARR %u (20 kHz center-aligned, RCR 1), ADC2 [IA, IC, VBUS] on TRGO2 at the top; "
             "offset calibration %u periods; power stage off",
             PWM_ARR, FOC_CTRL_CAL_SAMPLES);
-    LOG_INF("command block foc_ctrl_cmd at %p: arm +0, mode +4, v_mv +8, theta_e +12, step_seq +16; arm key 0x%08x",
+    LOG_INF("command block foc_ctrl_cmd at %p: arm +0, mode +4, v_mv +8, theta_e +12, step_seq +16, rate_e +20; "
+            "arm key 0x%08x",
             (void*)&foc_ctrl_cmd, FOC_CTRL_ARM_KEY);
 
     /* Drop the start-up window. */
@@ -231,6 +246,9 @@ static void report_loop(void* p1, void* p2, void* p3) {
         foc_ctrl_snapshot(&fc);
         if (fc.calibrated) {
             report_rot(&fc);
+            if (fc.mode == FOC_MODE_OPENLOOP) {
+                report_openloop(&fc);
+            }
         }
         if (n % REPORT_EVERY == 0U) {
             bool timing_valid = pwm_adc_stats_take(&st);

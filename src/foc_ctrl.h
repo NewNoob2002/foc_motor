@@ -15,6 +15,10 @@
  *   cmd.theta_e, ramped at 1 V/s. With the power stage on this drives a DC
  *   current (phase resistance) and pulls the rotor to that angle
  *   (alignment).
+ * - FOC_MODE_OPENLOOP: a d-axis vector ramped as in DC, starting at cmd.theta_e
+ *   on entry and rotating at signed cmd.rate_e electrical counts/s (clamped
+ *   to +/-FOC_CTRL_OL_RATE_MAX). Allowed with the power stage on or off.
+ *   The per-boot measured rotor angle is diagnostic only; no angle feedback.
  * - FOC_MODE_STEP: each change of cmd.step_seq starts one capture of
  *   FOC_CTRL_CAPTURE_LEN periods: FOC_CTRL_CAPTURE_PRE periods of zero
  *   vector, FOC_CTRL_CAPTURE_ON periods of cmd.v_mv at cmd.theta_e (no
@@ -59,6 +63,8 @@
 
 /* Largest cmd.v_mv used; larger values are clamped. */
 #define FOC_CTRL_V_MAX_MV             1000U
+/* One electrical revolution/s; 1/7 mechanical revolution/s with this motor. */
+#define FOC_CTRL_OL_RATE_MAX          4096
 
 #define FOC_CTRL_CAPTURE_LEN          256U /* 12.8 ms */
 #define FOC_CTRL_CAPTURE_PRE          16U
@@ -71,14 +77,16 @@ typedef enum {
     FOC_MODE_VOLTAGE = 3,
     FOC_MODE_CURRENT = 4,
     FOC_MODE_IDENT = 5,
+    FOC_MODE_OPENLOOP = 6,
 } foc_mode_t;
 
 typedef struct {
     uint32_t arm;      /* FOC_CTRL_ARM_KEY to switch the power stage on */
     uint32_t mode;     /* foc_mode_t; unknown values run FOC_MODE_IDLE */
-    uint32_t v_mv;     /* DC and step vector length, mV */
-    uint32_t theta_e;  /* DC and step vector angle, electrical counts, 0..4095 = 0..2 pi */
+    uint32_t v_mv;     /* DC, open-loop and step vector length, mV */
+    uint32_t theta_e;  /* fixed/start vector angle, electrical counts, 0..4095 = 0..2 pi */
     uint32_t step_seq; /* change it to start one capture in FOC_MODE_STEP */
+    int32_t rate_e;    /* +20: open-loop electrical counts/s, clamped to +/-FOC_CTRL_OL_RATE_MAX */
 } foc_ctrl_cmd_t;
 
 extern volatile foc_ctrl_cmd_t foc_ctrl_cmd;
@@ -97,11 +105,15 @@ typedef struct {
     float ic_offset;
     uint16_t ia_spread; /* max - min ADC codes during calibration */
     uint16_t ic_spread;
-    uint32_t enc_count;     /* raw TIM3 count of this step */
-    uint32_t theta_e_count; /* electrical angle used, 0..4095 */
-    float vbus;             /* V */
-    float vbus_f;           /* V, low-pass (tau 51 ms) */
-    float ia_f;             /* A, low-pass (tau 51 ms) */
+    bool calib_valid;          /* successful angle identification in this boot; cleared on new IDENT */
+    int32_t calib_direction;   /* +1 or -1, valid only when calib_valid */
+    uint32_t calib_offset_e;   /* electrical counts, valid only when calib_valid */
+    uint32_t theta_meas_count; /* calibrated rotor electrical angle, valid only when calib_valid */
+    uint32_t enc_count;        /* raw TIM3 count of this step */
+    uint32_t theta_e_count;    /* electrical angle used, 0..4095 */
+    float vbus;                /* V */
+    float vbus_f;              /* V, low-pass (tau 51 ms) */
+    float ia_f;                /* A, low-pass (tau 51 ms) */
     float ib_f;
     float ic_f;
     float i_d; /* A, this step */

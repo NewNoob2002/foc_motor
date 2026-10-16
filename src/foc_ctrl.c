@@ -7,6 +7,7 @@
 #include "power_guard.h"
 
 #include <math.h>
+#include <stddef.h>
 
 #include <zephyr/sys/atomic.h>
 #include <zephyr/sys/util.h>
@@ -42,12 +43,22 @@
 /* FOC_MODE_DC ramp: 1 V/s = 50 uV per period. */
 #define DC_RAMP_V_PER_STEP 50e-6f
 
+/* Q16 electrical counts with exact signed sub-Q16 carry at 20 kHz. */
+#define OL_PHASE_ONE       65536
+#define OL_PERIODS_PER_S   20000
+#define OL_PHASE_MASK      0x0FFFFFFFU
+
 /* Low-pass for the telemetry averages: x += (y - x) / 1024, tau = 1024 periods = 51 ms. */
 #define LPF_K              (1.0f / 1024.0f)
 
 BUILD_ASSERT(ENCODER_COUNTS_PER_REV == 4096, "RAD_PER_E_COUNT and the angle math assume 4096 counts per turn");
 BUILD_ASSERT(FOC_CTRL_V_MAX_MV <= (uint32_t)(POWER_GUARD_V_MAX * 1000.0f), "commanded vector above the guard cap");
 BUILD_ASSERT(FOC_CTRL_CAPTURE_PRE + FOC_CTRL_CAPTURE_ON < FOC_CTRL_CAPTURE_LEN, "capture needs a decay part");
+
+BUILD_ASSERT(offsetof(foc_ctrl_cmd_t, arm) == 0U && offsetof(foc_ctrl_cmd_t, mode) == 4U
+                 && offsetof(foc_ctrl_cmd_t, v_mv) == 8U && offsetof(foc_ctrl_cmd_t, theta_e) == 12U
+                 && offsetof(foc_ctrl_cmd_t, step_seq) == 16U && offsetof(foc_ctrl_cmd_t, rate_e) == 20U,
+             "debugger command layout changed");
 
 volatile foc_ctrl_cmd_t foc_ctrl_cmd;
 
@@ -74,11 +85,16 @@ typedef struct {
     power_guard_t guard;
     motor_ident_t ident;
     bool ident_published;
-    float dc_v;          /* FOC_MODE_DC ramp state, V */
-    uint32_t cap_idx;    /* next capture sample */
-    uint32_t step_seen;  /* last cmd.step_seq acted on */
-    float step_v;        /* latched capture amplitude, V */
-    uint32_t step_theta; /* latched capture angle, electrical counts */
+    bool calib_valid;
+    int32_t calib_direction;
+    uint32_t calib_offset_e;
+    uint32_t ol_phase;    /* Q16 counts, modulo one electrical turn */
+    int32_t ol_remainder; /* signed fractional Q16 carry, denominator OL_PERIODS_PER_S */
+    float dc_v;           /* DC/open-loop ramp state, V */
+    uint32_t cap_idx;     /* next capture sample */
+    uint32_t step_seen;   /* last cmd.step_seq acted on */
+    float step_v;         /* latched capture amplitude, V */
+    uint32_t step_theta;  /* latched capture angle, electrical counts */
     float vbus_f;
     float ia_f;
     float ib_f;
@@ -140,6 +156,28 @@ static uint32_t theta_e_count(uint32_t enc_count) {
     return ((enc_count % ENCODER_COUNTS_PER_REV) * POLE_PAIRS) % ENCODER_COUNTS_PER_REV;
 }
 
+/** Return the per-boot calibrated rotor angle modulo 4096, using unsigned wrap for either direction. */
+static uint32_t theta_meas_count(uint32_t enc_count) {
+    uint32_t raw = theta_e_count(enc_count);
+    uint32_t directed = st.calib_direction < 0 ? 0U - raw : raw;
+
+    return (directed - st.calib_offset_e) & (ENCODER_COUNTS_PER_REV - 1U);
+}
+
+/** Return this period's angle and integrate the clamped rate exactly, carrying fractional Q16 counts. */
+static uint32_t openloop_angle(void) {
+    int32_t rate = foc_ctrl_cmd.rate_e;
+
+    rate = MIN(MAX(rate, -FOC_CTRL_OL_RATE_MAX), FOC_CTRL_OL_RATE_MAX);
+    int32_t numerator = rate * OL_PHASE_ONE + st.ol_remainder;
+    int32_t increment = numerator / OL_PERIODS_PER_S;
+    uint32_t angle = st.ol_phase >> 16U;
+
+    st.ol_remainder = numerator % OL_PERIODS_PER_S;
+    st.ol_phase = (st.ol_phase + (uint32_t)increment) & OL_PHASE_MASK;
+    return angle;
+}
+
 /** Return float32 trig constants for the module contract; unknown angles suppress the vector. */
 static foc_sincos_t ident_sincos(uint32_t e_count) {
     foc_sincos_t sc;
@@ -184,7 +222,7 @@ static int16_t to_ma(float amps) {
 
 /* Commanded mode, or FOC_MODE_IDLE if it is unknown or not allowed with the power stage on. */
 static foc_mode_t mode_allowed(uint32_t m, bool power, bool* refused) {
-    bool known = m <= (uint32_t)FOC_MODE_IDENT;
+    bool known = m <= (uint32_t)FOC_MODE_OPENLOOP;
     bool stage6 = m == (uint32_t)FOC_MODE_VOLTAGE || m == (uint32_t)FOC_MODE_CURRENT;
 
     *refused = !known || (power && stage6);
@@ -284,9 +322,14 @@ void foc_ctrl_step(const pwm_adc_sample_t* sample, pwm_adc_cmd_t* cmd) {
         if (mode == FOC_MODE_IDENT) {
             motor_ident_start(&st.ident);
             st.ident_published = false;
+            st.calib_valid = false;
         }
         st.mode = mode;
         st.dc_v = 0.0f;
+        if (mode == FOC_MODE_OPENLOOP) {
+            st.ol_phase = (foc_ctrl_cmd.theta_e % ENCODER_COUNTS_PER_REV) << 16U;
+            st.ol_remainder = 0;
+        }
         pi_reset();
         if (atomic_get(&cap_state) == CAPTURE_RUNNING) {
             (void)atomic_set(&cap_state, CAPTURE_IDLE);
@@ -327,6 +370,10 @@ void foc_ctrl_step(const pwm_adc_sample_t* sample, pwm_adc_cmd_t* cmd) {
     out.v_dq.q = 0.0f;
 
     switch (mode) {
+        case FOC_MODE_OPENLOOP:
+            e_count = openloop_angle();
+            /* Fall through: both voltage modes share the 1 V/s ramp. */
+            __attribute__((fallthrough));
         case FOC_MODE_DC:
             if (st.dc_v < v_cmd) {
                 st.dc_v = MIN(st.dc_v + DC_RAMP_V_PER_STEP, v_cmd);
@@ -385,6 +432,11 @@ void foc_ctrl_step(const pwm_adc_sample_t* sample, pwm_adc_cmd_t* cmd) {
             ident_in.power_on = sample->power_on && gout.power_on;
 
             motor_ident_step(&st.ident, &ident_in, &ident_out);
+            if (st.ident.result.state == IDENT_DONE && !st.calib_valid) {
+                st.calib_direction = st.ident.result.direction;
+                st.calib_offset_e = st.ident.result.offset_e;
+                st.calib_valid = true;
+            }
             out.v_dq.d = ident_out.v_d;
             if (e_count != ident_out.theta_e_count) {
                 e_count = ident_out.theta_e_count;
@@ -421,6 +473,10 @@ void foc_ctrl_step(const pwm_adc_sample_t* sample, pwm_adc_cmd_t* cmd) {
     snap.ic_offset = st.ic_offset;
     snap.ia_spread = st.ia_max - st.ia_min;
     snap.ic_spread = st.ic_max - st.ic_min;
+    snap.calib_valid = st.calib_valid;
+    snap.calib_direction = st.calib_direction;
+    snap.calib_offset_e = st.calib_offset_e;
+    snap.theta_meas_count = st.calib_valid ? theta_meas_count(sample->enc_count) : 0U;
     snap.enc_count = sample->enc_count;
     snap.theta_e_count = e_count;
     snap.vbus = vbus;

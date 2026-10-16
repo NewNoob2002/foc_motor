@@ -65,6 +65,16 @@ target_sources(test_foc_ctrl PRIVATE
 target_include_directories(test_foc_ctrl PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/stubs
   ${CMAKE_CURRENT_SOURCE_DIR}/../../../src)
+# Stub one terminal module result without adding a firmware test API.
+foc_host_executable(test_foc_ctrl_calib test_foc_ctrl_calib.c)
+target_link_options(test_foc_ctrl_calib PRIVATE -Wl,--wrap=motor_ident_step)
+target_sources(test_foc_ctrl_calib PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../../src/foc_ctrl.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../../src/motor_ident.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../../src/power_guard.c)
+target_include_directories(test_foc_ctrl_calib PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/stubs
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../../src)
 foc_host_executable(sim_current_loop sim/sim_current_loop.c)
 foc_host_executable(sim_svpwm sim/sim_svpwm.c)
 foc_host_executable(sim_speed_loop sim/sim_speed_loop.c)
@@ -76,6 +86,7 @@ foc_host_test(test_transform)
 foc_host_test(test_current)
 foc_host_test(test_power_guard)
 foc_host_test(test_foc_ctrl)
+foc_host_test(test_foc_ctrl_calib)
 foc_host_test(test_motor_ident)
 add_test(NAME vec_compare_selftest COMMAND vec_compare --selftest)
 set_tests_properties(vec_compare_selftest PROPERTIES ENVIRONMENT "ASAN_OPTIONS=detect_leaks=0")

@@ -223,8 +223,8 @@ static void test_ident_powered(void) {
     }
     CHECK(cmd.power_on);
     sample.power_on = true;
-    /* Stage 6 modes remain refused while powered; 6 is still unknown. */
-    const uint32_t refused[] = {FOC_MODE_VOLTAGE, FOC_MODE_CURRENT, 6U, UINT32_MAX};
+    /* Stage 6 modes remain refused while powered; unknown values are still refused. */
+    const uint32_t refused[] = {FOC_MODE_VOLTAGE, FOC_MODE_CURRENT, 7U, UINT32_MAX};
 
     for (uint32_t k = 0U; k < sizeof(refused) / sizeof(refused[0]); k++) {
         foc_ctrl_cmd.mode = refused[k];
@@ -337,6 +337,104 @@ static void test_ident_mode_exit(void) {
     foc_ctrl_ident_release();
 }
 
+/** Check signed rate integration against elapsed time at every period for ten seconds. */
+static void test_openloop_rates(void) {
+    const int32_t rates[] = {4096, -4096, 100, 100000, -100000, INT32_MIN, INT32_MAX, 0, -100};
+    const uint32_t start = 4093U;
+
+    for (size_t k = 0U; k < sizeof(rates) / sizeof(rates[0]); k++) {
+        (void)calibrate_codes(2047U, 2049U, 2047U, 2049U);
+        pwm_adc_sample_t sample = sample_at(0.0f);
+        pwm_adc_cmd_t cmd;
+        foc_ctrl_snapshot_t snap;
+        int32_t rate = rates[k];
+
+        if (rate > FOC_CTRL_OL_RATE_MAX) {
+            rate = FOC_CTRL_OL_RATE_MAX;
+        } else if (rate < -FOC_CTRL_OL_RATE_MAX) {
+            rate = -FOC_CTRL_OL_RATE_MAX;
+        }
+        foc_ctrl_cmd.mode = FOC_MODE_OPENLOOP;
+        foc_ctrl_cmd.theta_e = start + 4096U;
+        foc_ctrl_cmd.rate_e = rates[k];
+        for (uint32_t n = 0U; n <= 200000U; n++) {
+            foc_ctrl_step(&sample, &cmd);
+            foc_ctrl_snapshot(&snap);
+            double expected = (double)start + (double)rate * (double)n / 20000.0;
+            double error = remainder((double)snap.theta_e_count - expected, 4096.0);
+
+            CHECK(fabs(error) <= 1.0);
+            CHECK(snap.theta_e_count < 4096U);
+            CHECK(!snap.mode_refused && snap.mode == FOC_MODE_OPENLOOP);
+            CHECK(!snap.calib_valid);
+            /* Start angle is latched on entry; live theta_e edits must not reset the phase. */
+            foc_ctrl_cmd.theta_e = 123U;
+        }
+        CHECK(fabs(remainder((double)snap.theta_e_count - ((double)start + rate * 10.0), 4096.0)) <= 1.0);
+    }
+}
+
+/** Verify powered permission, shared ramp/caps, live rate changes and a fresh phase/ramp on reentry. */
+static void test_openloop_voltage_and_reentry(void) {
+    for (uint32_t powered = 0U; powered <= 1U; powered++) {
+        (void)calibrate_codes(2047U, 2049U, 2047U, 2049U);
+        pwm_adc_sample_t sample = sample_at(15.0f);
+        pwm_adc_cmd_t cmd;
+        foc_ctrl_snapshot_t snap;
+
+        if (powered != 0U) {
+            foc_ctrl_cmd.arm = FOC_CTRL_ARM_KEY;
+            for (uint32_t n = 0U; n < POWER_GUARD_VBUS_ARM_PERIODS; n++) {
+                foc_ctrl_step(&sample, &cmd);
+            }
+            CHECK(cmd.power_on);
+            sample.power_on = true;
+        }
+        foc_ctrl_cmd.mode = FOC_MODE_OPENLOOP;
+        foc_ctrl_cmd.theta_e = 1024U;
+        foc_ctrl_cmd.v_mv = UINT32_MAX;
+        for (uint32_t n = 1U; n <= 30000U; n++) {
+            foc_ctrl_step(&sample, &cmd);
+            foc_ctrl_snapshot(&snap);
+            float expected = fminf((float)n * 50e-6f, 1.0f);
+            foc_ab_t vector = applied_vector(&cmd, snap.vbus);
+
+            CHECK(!snap.mode_refused && snap.mode == FOC_MODE_OPENLOOP);
+            CHECK(cmd.power_on == (powered != 0U));
+            CHECK(fabsf(snap.v_d - expected) < 0.0002f);
+            CHECK(snap.v_d <= (float)FOC_CTRL_V_MAX_MV * 0.001f);
+            CHECK(snap.v_d <= POWER_GUARD_V_MAX && snap.v_q == 0.0f);
+            CHECK(fabsf(vector.alpha) < 1e-5f && fabsf(vector.beta - snap.v_d) < 1e-5f);
+        }
+        foc_ctrl_cmd.v_mv = 200U;
+        for (uint32_t n = 0U; n < 20000U; n++) {
+            foc_ctrl_step(&sample, &cmd);
+        }
+        foc_ctrl_snapshot(&snap);
+        CHECK_NEAR(snap.v_d, 0.2f, 1e-6);
+        foc_ctrl_cmd.rate_e = 100;
+        for (uint32_t n = 0U; n < 20001U; n++) {
+            foc_ctrl_step(&sample, &cmd);
+        }
+        foc_ctrl_snapshot(&snap);
+        CHECK(snap.theta_e_count == 1124U);
+        foc_ctrl_cmd.rate_e = -100;
+        for (uint32_t n = 0U; n < 20000U; n++) {
+            foc_ctrl_step(&sample, &cmd);
+        }
+        foc_ctrl_snapshot(&snap);
+        CHECK(snap.theta_e_count == 1024U);
+        foc_ctrl_cmd.mode = FOC_MODE_IDLE;
+        foc_ctrl_step(&sample, &cmd);
+        foc_ctrl_cmd.theta_e = 4095U;
+        foc_ctrl_cmd.mode = FOC_MODE_OPENLOOP;
+        foc_ctrl_step(&sample, &cmd);
+        foc_ctrl_snapshot(&snap);
+        CHECK(snap.theta_e_count == 4095U);
+        CHECK_NEAR(snap.v_d, 50e-6f, 1e-8);
+    }
+}
+
 /* Run production-control regressions with board constants and C11 atomics supplied by host stubs. */
 int main(void) {
     test_calibration_acceptance_boundaries();
@@ -347,5 +445,7 @@ int main(void) {
     test_ident_unpowered();
     test_ident_powered();
     test_ident_mode_exit();
+    test_openloop_rates();
+    test_openloop_voltage_and_reentry();
     return foc_test_result("test_foc_ctrl");
 }
