@@ -114,7 +114,7 @@ static pwm_adc_step_fn step_fn;
 static void (*fault_fn)(void);
 static uint32_t overruns_in_a_row;
 
-/* Power-stage state: written only by the ISR (and pwm_adc_stop()), read by threads. */
+/* Power-stage state: written by the ISR, stop and fatal shutdown; read by threads. */
 static atomic_t powered;
 
 /* ISR entries; single writer (the ISR), 32-bit reads are atomic. */
@@ -503,6 +503,19 @@ bool pwm_adc_outputs_safe(void) {
         return fixed_safe && (before ? gate_moder == MODER_PC0_PC2_AF : gate_moder == MODER_PC0_PC2_ANALOG && sd_low);
     }
     return false;
+}
+
+/**
+ * Disable the power stage with register accesses only, including during a fatal exception.
+ * This is final until reset: PRIMASK also masks the zero-latency DMA ISR, which
+ * BASEPRI (Zephyr's arch_irq_lock) does not, so an SVC oops cannot race rearming.
+ */
+void pwm_adc_fatal_off(void) {
+    __disable_irq();
+    power_off(); /* First peripheral writes: SD1-SD3 low, then PC0-PC2 analog. */
+    LL_TIM_DisableAllOutputs(TIM1);
+    /* No control may resume after a fatal error; stop further ADC triggers too. */
+    LL_TIM_DisableCounter(TIM1);
 }
 
 /*

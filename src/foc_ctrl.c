@@ -59,7 +59,8 @@ BUILD_ASSERT(offsetof(foc_ctrl_cmd_t, arm) == 0U && offsetof(foc_ctrl_cmd_t, mod
                  && offsetof(foc_ctrl_cmd_t, step_seq) == 16U && offsetof(foc_ctrl_cmd_t, rate_e) == 20U
                  && offsetof(foc_ctrl_cmd_t, id_ma) == 24U && offsetof(foc_ctrl_cmd_t, iq_ma) == 28U
                  && offsetof(foc_ctrl_cmd_t, dtc) == 32U && offsetof(foc_ctrl_cmd_t, spd_rpm) == 36U
-                 && offsetof(foc_ctrl_cmd_t, spd_step) == 40U && offsetof(foc_ctrl_cmd_t, cff) == 44U,
+                 && offsetof(foc_ctrl_cmd_t, spd_step) == 40U && offsetof(foc_ctrl_cmd_t, cff) == 44U
+                 && offsetof(foc_ctrl_cmd_t, crash) == 48U,
              "debugger command layout changed");
 
 volatile foc_ctrl_cmd_t foc_ctrl_cmd;

@@ -63,7 +63,8 @@
  * 12-17 V trips (latched until reset).
  *
  * foc_ctrl_cmd is the command block for the debugger (the console UART
- * has no RX wire); the ISR reads it every period.
+ * has no RX wire); the ISR reads its control fields every period. The test-only
+ * crash field is consumed only by the report thread.
  */
 
 #ifndef FOC_MOTOR_FOC_CTRL_H
@@ -127,6 +128,7 @@ typedef struct {
     int32_t spd_rpm;   /* +36: signed calibrated-frame rpm, clamped to +/-200 */
     uint32_t spd_step; /* +40: 1 = kind-2 step capture, 0 = ordinary ramp; latched with sequence */
     uint32_t cff;      /* +44: 0 off, 1 on; latched on step_seq, refused without a valid boot map */
+    uint32_t crash;    /* +48: test-only; 0x43524153 ("CRAS") is cleared by the report thread, then k_oops() */
 } foc_ctrl_cmd_t;
 
 extern volatile foc_ctrl_cmd_t foc_ctrl_cmd;

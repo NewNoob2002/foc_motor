@@ -138,6 +138,14 @@ int pwm_adc_init(pwm_adc_step_fn step, void (*fault)(void));
  */
 bool pwm_adc_outputs_safe(void);
 
+/**
+ * Permanently mask interrupts, drive SD1-SD3 low, set PC0-PC2 analog, then clear
+ * TIM1 MOE and stop its counter. Register-only fatal shutdown, safe in exception
+ * context with interrupts already masked; no kernel API needed.
+ * Never restore interrupts or resume control after calling this function.
+ */
+void pwm_adc_fatal_off(void);
+
 /*
  * Disable the DMA IRQ first, switch power off, clear MOE and stop TIM1.
  * May run in thread or system-timer ISR context. Final until reset: do not

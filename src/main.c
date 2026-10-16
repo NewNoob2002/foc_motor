@@ -10,8 +10,10 @@
 #include <zephyr/devicetree.h>
 #include <zephyr/devicetree/dma.h>
 #include <zephyr/devicetree/gpio.h>
+#include <zephyr/fatal.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/logging/log_ctrl.h>
 #include <zephyr/sys/util.h>
 
 LOG_MODULE_REGISTER(foc_motor, LOG_LEVEL_INF);
@@ -51,11 +53,41 @@ BUILD_ASSERT(DT_DMAS_CELL_BY_NAME(DT_NODELABEL(usart3), tx, slot) == 29, "USART3
  * statically allocated thread, which also runs the Stage 5 FOC bench first.
  * Lower priority than the log thread (6).
  */
-#define REPORT_STACK_SIZE 1024
+#define REPORT_STACK_SIZE 2048
 #define REPORT_PRIORITY   7
 
 K_THREAD_STACK_DEFINE(report_stack, REPORT_STACK_SIZE);
 static struct k_thread report_thread;
+
+/**
+ * Shut down before application fatal logging, then retain Zephyr's halt policy.
+ *
+ * In v4.4.2, z_arm_fault() classifies and prints the hardware fault before
+ * z_arm_fatal_error() dumps the exception frame. z_fatal_error() then logs
+ * the reason/current thread and invokes coredump() before calling this hook.
+ * CONFIG_EXCEPTION_DUMP_HOOK with arch_exception_set_dump_hook() could run
+ * earlier, before each exception diagnostic; that optional output hook is not
+ * installed here. Latency through the preceding diagnostics is not bounded.
+ */
+void k_sys_fatal_error_handler(unsigned int reason, const struct arch_esf* esf) {
+    pwm_adc_fatal_off();
+    ARG_UNUSED(esf);
+    LOG_PANIC();
+    LOG_ERR("fatal: power stage off (reason %u)", reason);
+    k_fatal_halt(reason);
+}
+
+/** Log the report thread's minimum unused stack so far, outside the large dump frames. */
+static __noinline void report_stack_space(const char* context) {
+    size_t unused;
+    int ret = k_thread_stack_space_get(&report_thread, &unused);
+
+    if (ret == 0) {
+        LOG_INF("report stack unused %u B (%s)", (unsigned int)unused, context);
+    } else {
+        LOG_WRN("report stack measurement failed: %d (%s)", ret, context);
+    }
+}
 
 /* One capture line is about 60 characters, 0.7 ms at 921600 baud; the pause keeps the 1 KiB log buffer from dropping. */
 #define CAPTURE_LINE_PAUSE_MS 2
@@ -322,7 +354,7 @@ static void report_loop(void* p1, void* p2, void* p3) {
             "offset calibration %u periods; power stage off",
             PWM_ARR, FOC_CTRL_CAL_SAMPLES);
     LOG_INF("command block foc_ctrl_cmd at %p: arm +0, mode +4, v_mv +8, theta_e +12, step_seq +16, rate_e +20; "
-            "id_ma +24, iq_ma +28, dtc +32, spd_rpm +36, spd_step +40, cff +44; arm key 0x%08x",
+            "id_ma +24, iq_ma +28, dtc +32, spd_rpm +36, spd_step +40, cff +44, crash +48; arm key 0x%08x",
             (void*)&foc_ctrl_cmd, FOC_CTRL_ARM_KEY);
 
     /* Drop the start-up window. */
@@ -332,6 +364,11 @@ static void report_loop(void* p1, void* p2, void* p3) {
     for (uint32_t n = 1;; n++) {
         k_msleep((int32_t)(ROT_PERIOD_MS - k_uptime_get() % ROT_PERIOD_MS));
 
+        /* Test-only debugger hook: SVC oops reaches our fatal handler in Zephyr v4.4.2. */
+        if (foc_ctrl_cmd.crash == 0x43524153U) { /* "CRAS" */
+            foc_ctrl_cmd.crash = 0U;
+            k_oops();
+        }
         if (!supervisor_reported && pwm_adc_supervisor_tripped()) {
             LOG_ERR("FOC ISR progress below 150 per 10 ms while powered; power stage off, timer stopped until reset");
             supervisor_reported = true;
@@ -356,21 +393,25 @@ static void report_loop(void* p1, void* p2, void* p3) {
             if (fc.calibrated) {
                 report_power(&st, &fc);
             }
+            report_stack_space("periodic");
         }
 
         const foc_ctrl_capture_t* c = foc_ctrl_capture_get();
 
         if (c != NULL) {
             dump_capture(c, &fc);
+            report_stack_space("after dump_capture");
         }
         const foc_ctrl_ident_t* ident = foc_ctrl_ident_get();
 
         if (ident != NULL) {
             dump_ident(ident);
+            report_stack_space("after dump_ident");
         }
         const cog_raw_t* raw = foc_ctrl_map_get();
         if (raw != NULL) {
             dump_map(raw, &fc);
+            report_stack_space("after dump_map");
         }
     }
 }
