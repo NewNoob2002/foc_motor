@@ -48,19 +48,45 @@ foc_host_executable(foc_host_smoke smoke.c)
 foc_host_executable(test_transform test_transform.c)
 foc_host_executable(test_pi test_pi.c)
 foc_host_executable(test_svpwm test_svpwm.c)
+foc_host_executable(test_deadtime test_deadtime.c)
+foc_host_test(test_deadtime)
 foc_host_executable(test_current test_current.c)
 # Stage 7 power-stage policy from the firmware (pure C, no Zephyr).
 foc_host_executable(test_power_guard test_power_guard.c)
 target_sources(test_power_guard PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../../src/power_guard.c)
 target_include_directories(test_power_guard PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../../src)
+foc_host_executable(test_motor_ident test_motor_ident.c)
+target_sources(test_motor_ident PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../../src/motor_ident.c)
+target_include_directories(test_motor_ident PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../../src)
 # Exercise production control with board constants and standard C11 atomics, without a Zephyr installation.
 foc_host_executable(test_foc_ctrl test_foc_ctrl.c)
 target_sources(test_foc_ctrl PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../../src/foc_speed.c
   ${CMAKE_CURRENT_SOURCE_DIR}/../../../src/foc_ctrl.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../../src/motor_ident.c
   ${CMAKE_CURRENT_SOURCE_DIR}/../../../src/power_guard.c)
 target_include_directories(test_foc_ctrl PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/stubs
   ${CMAKE_CURRENT_SOURCE_DIR}/../../../src)
+# Stub one terminal module result without adding a firmware test API.
+foc_host_executable(test_foc_ctrl_calib test_foc_ctrl_calib.c)
+target_link_options(test_foc_ctrl_calib PRIVATE -Wl,--wrap=motor_ident_step)
+target_sources(test_foc_ctrl_calib PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../../src/foc_speed.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../../src/foc_ctrl.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../../src/motor_ident.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../../src/power_guard.c)
+target_include_directories(test_foc_ctrl_calib PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/stubs
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../../src)
+foc_host_executable(test_speed test_speed.c)
+target_sources(test_speed PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../../src/foc_speed.c)
+target_include_directories(test_speed PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../../src)
+foc_host_test(test_speed)
+foc_host_executable(sim_stage7_speed sim/sim_stage7_speed.c)
+target_sources(sim_stage7_speed PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../../../src/foc_speed.c)
+target_include_directories(sim_stage7_speed PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../../../src)
+foc_host_test(sim_stage7_speed)
 foc_host_executable(sim_current_loop sim/sim_current_loop.c)
 foc_host_executable(sim_svpwm sim/sim_svpwm.c)
 foc_host_executable(sim_speed_loop sim/sim_speed_loop.c)
@@ -72,6 +98,8 @@ foc_host_test(test_transform)
 foc_host_test(test_current)
 foc_host_test(test_power_guard)
 foc_host_test(test_foc_ctrl)
+foc_host_test(test_foc_ctrl_calib)
+foc_host_test(test_motor_ident)
 add_test(NAME vec_compare_selftest COMMAND vec_compare --selftest)
 set_tests_properties(vec_compare_selftest PROPERTIES ENVIRONMENT "ASAN_OPTIONS=detect_leaks=0")
 if(FOC_EXERCISES)

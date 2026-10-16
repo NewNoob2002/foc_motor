@@ -15,15 +15,44 @@
  *   cmd.theta_e, ramped at 1 V/s. With the power stage on this drives a DC
  *   current (phase resistance) and pulls the rotor to that angle
  *   (alignment).
+ * - FOC_MODE_OPENLOOP: a d-axis vector ramped as in DC, starting at cmd.theta_e
+ *   on entry and rotating at signed cmd.rate_e electrical counts/s (clamped
+ *   to +/-FOC_CTRL_OL_RATE_MAX). Allowed with the power stage on or off.
+ *   The per-boot measured rotor angle is diagnostic only; no angle feedback.
  * - FOC_MODE_STEP: each change of cmd.step_seq starts one capture of
  *   FOC_CTRL_CAPTURE_LEN periods: FOC_CTRL_CAPTURE_PRE periods of zero
  *   vector, FOC_CTRL_CAPTURE_ON periods of cmd.v_mv at cmd.theta_e (no
  *   ramp), then zero again, recording IA and IC every period (inductance
  *   from the current rise). Amplitude and angle are latched at capture
  *   start; later command edits do not change the running capture.
- * - FOC_MODE_VOLTAGE, FOC_MODE_CURRENT: the Stage 6 modes (1 V at the
- *   encoder angle; the current loop). Only while the power stage is off;
- *   with it on they run as FOC_MODE_IDLE (snapshot.mode_refused).
+ * - FOC_MODE_IDENT: automatic encoder alignment, R and L measurement; requires
+ *   power already on. Ignores v_mv/theta_e, aborts on disarm, and publishes
+ *   one terminal result through foc_ctrl_ident_get()/release().
+ * - FOC_MODE_VOLTAGE: Stage 6 1 V at the encoder angle, refused while powered.
+ * - FOC_MODE_CURRENT: powered dq loop at the calibrated rotor angle, permitted
+ *   only after successful per-boot identification with 0.02<R<2 ohm and
+ *   10 uH<L<5 mH. Gains are L*wc and R*wc, wc=2*pi*1000 Hz, with a 1 V
+ *   applied-vector cap. Optional dtc=1 reserves PI headroom for the identified
+ *   per-phase voltage loss; the same 1 V cap covers PI plus compensation.
+ *   DTC requires 0.05<V0<0.6 V and is off by default. Unpowered checks use raw
+ *   encoder angle and placeholder gains. Entry resets both references and integrals
+ *   and takes step_seq as its baseline. Write id_ma/iq_ma/dtc then change step_seq
+ *   to latch clamped references and the accepted DTC state;
+ *   a free capture buffer records dq currents, old/new refs and PRE old-reference
+ *   samples before the new command applies at top PRE. Busy captures defer the
+ *   next sequence until released. Speed above 205 counts/10 ms trips when powered.
+ *   Integrals reset while power is off.
+ * - FOC_MODE_SPEED: same permission, calibrated angle, DTC and 1 V current loop
+ *   as CURRENT, with id=0 and iq from a 1 kHz speed PI limited to +/-0.5 A.
+ *   Entry clears PI, reference and estimator. Write spd_rpm/dtc/spd_step before
+ *   changing step_seq. Ordinary commands ramp at 400 rpm/s; spd_step=1 requests
+ *   a 256 ms kind-2 capture and applies the latched reference as a step at
+ *   sample PRE. Busy captures defer sequences until release. Speed and iq_ref
+ *   are recorded at the same 1 kHz update; iq reaches PWM one top (50 us) later.
+ *   Speed feedback follows the calibrated mechanical direction while powered;
+ *   unpowered checks use raw encoder direction. The rolling 10 ms window has
+ *   about 5 ms delay and 1.46484375 rpm resolution. Overspeed is checked at
+ *   the existing 10 ms cadence in both current-loop modes.
  *
  * The power stage (Stage 7) switches on only through src/power_guard.c:
  * cmd.arm = FOC_CTRL_ARM_KEY, offsets calibrated, VBUS 14.0-16.5 V for
@@ -43,6 +72,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "foc_speed.h"
+#include "motor_ident.h"
 #include "pwm_adc.h"
 
 /* 4096 periods at 20 kHz = 205 ms of zero-current samples. */
@@ -55,8 +86,18 @@
 
 /* Largest cmd.v_mv used; larger values are clamped. */
 #define FOC_CTRL_V_MAX_MV             1000U
+/* One electrical revolution/s; 1/7 mechanical revolution/s with this motor. */
+#define FOC_CTRL_OL_RATE_MAX          4096
 
-#define FOC_CTRL_CAPTURE_LEN          256U /* 12.8 ms */
+/* Current-loop tuning and learning-bench reference/speed limits. */
+#define FOC_CTRL_DTC_BAND_A           0.05f
+#define FOC_CTRL_CC_BW_HZ             1000U
+#define FOC_CTRL_ID_MAX_A             1.0f
+#define FOC_CTRL_IQ_MAX_A             0.5f
+#define FOC_CTRL_OVERSPEED_RPM        300U
+#define FOC_CTRL_OVERSPEED_COUNTS     205 /* counts per 10 ms; trip strictly above */
+
+#define FOC_CTRL_CAPTURE_LEN          256U /* 12.8 ms; kind 2: 256 ms */
 #define FOC_CTRL_CAPTURE_PRE          16U
 #define FOC_CTRL_CAPTURE_ON           128U /* 6.4 ms */
 
@@ -66,22 +107,32 @@ typedef enum {
     FOC_MODE_STEP = 2,
     FOC_MODE_VOLTAGE = 3,
     FOC_MODE_CURRENT = 4,
+    FOC_MODE_IDENT = 5,
+    FOC_MODE_OPENLOOP = 6,
+    FOC_MODE_SPEED = 7,
 } foc_mode_t;
 
 typedef struct {
     uint32_t arm;      /* FOC_CTRL_ARM_KEY to switch the power stage on */
     uint32_t mode;     /* foc_mode_t; unknown values run FOC_MODE_IDLE */
-    uint32_t v_mv;     /* DC and step vector length, mV */
-    uint32_t theta_e;  /* DC and step vector angle, electrical counts, 0..4095 = 0..2 pi */
-    uint32_t step_seq; /* change it to start one capture in FOC_MODE_STEP */
+    uint32_t v_mv;     /* DC, open-loop and step vector length, mV */
+    uint32_t theta_e;  /* fixed/start vector angle, electrical counts, 0..4095 = 0..2 pi */
+    uint32_t step_seq; /* change it to start one capture in STEP or latch refs/capture in CURRENT */
+    int32_t rate_e;    /* +20: open-loop electrical counts/s, clamped to +/-FOC_CTRL_OL_RATE_MAX */
+    int32_t id_ma;     /* +24: write both references, then change step_seq to latch */
+    int32_t iq_ma;     /* +28: mA, clamped to +/-FOC_CTRL_IQ_MAX_A */
+    uint32_t dtc;      /* +32: 0 off, 1 on; latched with refs on step_seq change */
+    int32_t spd_rpm;   /* +36: signed calibrated-frame rpm, clamped to +/-200 */
+    uint32_t spd_step; /* +40: 1 = kind-2 step capture, 0 = ordinary ramp; latched with sequence */
 } foc_ctrl_cmd_t;
 
 extern volatile foc_ctrl_cmd_t foc_ctrl_cmd;
 
 /* Latest values of the step, written only by the ISR. */
 typedef struct {
-    uint32_t steps; /* control steps after calibration */
-    uint32_t mode;  /* foc_mode_t that ran */
+    uint32_t steps;                  /* control steps after calibration */
+    uint32_t mode;                   /* foc_mode_t that ran */
+    motor_ident_phase_t ident_phase; /* automatic identification phase */
     bool calibrated;
     bool cal_failed;   /* plausibility rejection, sticky until reset */
     bool power_on;     /* power stage on during this step (BSP state) */
@@ -91,14 +142,28 @@ typedef struct {
     float ic_offset;
     uint16_t ia_spread; /* max - min ADC codes during calibration */
     uint16_t ic_spread;
-    uint32_t enc_count;     /* raw TIM3 count of this step */
-    uint32_t theta_e_count; /* electrical angle used, 0..4095 */
-    float vbus;             /* V */
-    float vbus_f;           /* V, low-pass (tau 51 ms) */
-    float ia_f;             /* A, low-pass (tau 51 ms) */
+    bool dtc;                  /* latched and accepted compensation request */
+    bool dtc_refused;          /* latched request rejected by V0 plausibility */
+    bool calib_valid;          /* successful angle identification in this boot; cleared on new IDENT */
+    int32_t calib_direction;   /* +1 or -1, valid only when calib_valid */
+    uint32_t calib_offset_e;   /* electrical counts, valid only when calib_valid */
+    uint32_t theta_meas_count; /* calibrated rotor electrical angle, valid only when calib_valid */
+    uint32_t enc_count;        /* raw TIM3 count of this step */
+    uint32_t theta_e_count;    /* electrical angle used, 0..4095 */
+    float vbus;                /* V */
+    float vbus_f;              /* V, low-pass (tau 51 ms) */
+    float ia_f;                /* A, low-pass (tau 51 ms) */
     float ib_f;
     float ic_f;
-    float i_d; /* A, this step */
+    float i_d_ref; /* A, latched reference */
+    float i_q_ref;
+    float cc_kp;            /* V/A */
+    float cc_ki;            /* V/(A s) */
+    int32_t speed_counts;   /* signed mechanical encoder counts per rolling 10 ms */
+    float speed_rpm;        /* calibrated-frame rpm in powered operation */
+    float spd_ref_rpm;      /* ramped reference */
+    int32_t spd_target_rpm; /* sequence-latched reference */
+    float i_d;              /* A, this step */
     float i_q;
     float v_d; /* V, applied from the next counter top */
     float v_q;
@@ -110,11 +175,21 @@ typedef struct {
 
 /* One step capture; sample k is the current measured at the counter top of period k. */
 typedef struct {
-    uint32_t seq;     /* cmd.step_seq that started it */
+    uint32_t seq;  /* cmd.step_seq that started it */
+    uint32_t kind; /* 0: IA/IC voltage step, 1: id/iq current step, 2: speed step at 1 kHz */
+    int32_t old_spd_rpm;
+    int32_t new_spd_rpm;
+    int32_t old_id_ma;
+    int32_t old_iq_ma;
+    int32_t new_id_ma;
+    int32_t new_iq_ma;
     uint32_t v_mv;    /* step size */
     uint32_t theta_e; /* step angle, electrical counts */
     float vbus;       /* V, at the start */
     bool power_on;    /* power stage on during the whole capture */
+    bool dtc;         /* accepted state for the new references at top PRE */
+    bool dtc_refused; /* V0 was outside the strict (0.05, 0.6) V window */
+    /* Kind 1: id/iq in mA; kind 2: speed in deci-rpm / iq reference in mA. */
     int16_t ia_ma[FOC_CTRL_CAPTURE_LEN];
     int16_t ic_ma[FOC_CTRL_CAPTURE_LEN];
 } foc_ctrl_capture_t;
@@ -136,5 +211,14 @@ void foc_ctrl_snapshot(foc_ctrl_snapshot_t* out);
 const foc_ctrl_capture_t* foc_ctrl_capture_get(void);
 
 void foc_ctrl_capture_release(void);
+
+/** Terminal identification measurements, immutable until released by the thread. */
+typedef motor_ident_result_t foc_ctrl_ident_t;
+
+/** Return a finished identification, or NULL; thread context, no copying required. */
+const foc_ctrl_ident_t* foc_ctrl_ident_get(void);
+
+/** Return the finished identification buffer to the ISR after reporting it. */
+void foc_ctrl_ident_release(void);
 
 #endif /* FOC_MOTOR_FOC_CTRL_H */
