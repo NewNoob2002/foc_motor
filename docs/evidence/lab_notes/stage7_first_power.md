@@ -135,6 +135,12 @@ Same setup; probe S/N 63728769; connect with the stage off cost 2 missed periods
 
 Direction is **−1** (the count falls as the electrical angle rises): run 2 directly, and run 1 once its 270° start is taken into account (270° → 360° is +90°, measured −136 counts). Design flaw: the alignment never checks that the first pull moved the rotor. Fix in progress: steps 0° → 120° → 240° → 360°, direction from the two forced +120° moves, which must agree.
 
+### Alignment fix `9d385a0` (2026-10-15)
+
+Alignment now parks at 0°, then pulls to 120°, 240° and 360° (0°) at 1.0 A with the current decayed to zero between steps. Direction comes from the 120° → 240° and 240° → 360° moves, which must agree in sign and each be 1365 ± 200 electrical counts; offset from the final 0° position. Host plant with torque and stiction, five start angles including the 180° unstable start, both directions. Phase numbering changed: done = 9, failed = 10. **Command block now at `0x200013F0`.**
+
+Flashed on USB power (VBUS 0 mV, VTref 3.320 V, UID as above, probe 63728769); `fw_9d385a0.bin` SHA-256 `3c9c20dc7a09828dd153a9498760e4dc46ac39fa8645bf8aae6dda0e312da812`, verify OK. Boot benchmarks (max cycles): start 112, servo 406, R fit 795, L 395, copy 142; idle ISR 1963–1966; offsets IA 1962.34, IC 1996.45; `vec_compare` PASS. Mode 5 with the stage off: state 10, reason 1 (not powered); SD1–SD4 low, PC0–PC3 analog.
+
 ## Next (needs the user's go)
 
 Stage 7 first power, in the roadmap order, stopping at the first surprise:
