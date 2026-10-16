@@ -141,6 +141,23 @@ Alignment now parks at 0°, then pulls to 120°, 240° and 360° (0°) at 1.0 A 
 
 Flashed on USB power (VBUS 0 mV, VTref 3.320 V, UID as above, probe 63728769); `fw_9d385a0.bin` SHA-256 `3c9c20dc7a09828dd153a9498760e4dc46ac39fa8645bf8aae6dda0e312da812`, verify OK. Boot benchmarks (max cycles): start 112, servo 406, R fit 795, L 395, copy 142; idle ISR 1963–1966; offsets IA 1962.34, IC 1996.45; `vec_compare` PASS. Mode 5 with the stage off: state 10, reason 1 (not powered); SD1–SD4 low, PC0–PC3 analog.
 
+### Identification run 3 (`9d385a0`, DCBUS 15 V, 2026-10-15)
+
+Same setup; probe 63728769. Raw: `run3.log`, `jl_ident_run3.out`, `ident_run3_result.txt`.
+
+| Result | Value |
+|---|---|
+| ISR | exec max **2606 cycles (15.3 µs)** over the run, **0 overruns**; the one missed period was at the J-Link connect (uptime 8 s, stage off), none while powered (29–42 s) |
+| State | 9 (done), no failure, no fault |
+| Alignment | enc 61248 at 120°, 61055 at 240°, 60865 at 360°: **Δ −193 and −190 counts** (ideal 195), **direction −1**, offset 4025 electrical counts (this boot). `rot` trace: park 0 → 0, 120°: 4094 → 3905, 240°: 3898 → 3711, 360°: → 3521 |
+| R points | 331 mV / 500 mA, 384 / 749, 436 / 1000, 487 / 1249, 535 / 1499 |
+| R, V0, residual | **0.201 Ω**, 234 mV, 1 mV |
+| L, ripple | **70 µH**, 566 mA p-p |
+
+Over three runs: R 0.200 / 0.201 / 0.201 Ω, V0 235 / 233 / 234 mV, L 69 / 69 / 70 µH. Direction −1 (runs 2 and 3; run 1's +1 was the alignment flaw). The three forced +120° steps also confirm the phase order against the encoder: the field rotating forward (A → B → C) turns the rotor with a falling count, every step. The offset is per boot (incremental encoder): run identification after each power-up, or reference it to Z later.
+
+Roadmap stage 7 status: step 1 (first power) done; step 2 (R, L) done; step 4 (alignment) done; step 3 (open-loop rotation) partly covered by the three forced steps; steps 5 (current loop, gains from R and L: kp = L·ωc ≈ 0.43 V/A, ki = R·ωc ≈ 1260 V/(A·s) at 1 kHz) and 6 (speed loop) remain.
+
 ## Next (needs the user's go)
 
 Stage 7 first power, in the roadmap order, stopping at the first surprise:
