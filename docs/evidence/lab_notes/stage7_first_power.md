@@ -181,6 +181,33 @@ Mode 4 while powered: only with a valid, plausible identification this boot (0.0
 
 Flashed on USB power (VBUS 89 mV, probe 63728769), SHA-256 `afb57f28e154db0ec308f322596cded196d4bf82ae7263cd4d38e5f0ef43536b`, verify OK; **command block `0x20001504`**. Boot benchmarks (max cycles): mode-4 kernel + angle + speed 1547, full Stage 5 step 1724, ident steps ≤ 828. Mode 4 with the stage off (same arithmetic, stage 6 path): ISR exec max **2603–2683 cycles (15.3–15.8 µs)** against 3400; stage off and pins safe throughout. Raw: `build/hil/stage7/current/`.
 
+### First closed current loop (`89f28a3`, DCBUS 15 V, 2026-10-15)
+
+Same setup, shaft free (user's choice for the iq tests). Raw: `build/hil/stage7/current/` (`ident.log`, `id_steps.log`, `iq_steps.log`, `jl_current_run1.out`, `marks.txt`).
+
+**Identification run 5:**
+- R 0.200 Ω, V0 234 mV, L 69 µH, direction −1 (Δ −219 / −186), offset 3080, ISR max 2785 cycles.
+- Two-sided park: A = B = 61000 exactly (return through 120° at 60820), friction band 0.
+- The open-loop offset bias is therefore **not friction but a cogging detent**: 84 detents per turn, one every 30° electrical, so the rotor settles up to ±15° from the field. A two-sided park cannot remove it; the forward/backward open-loop average can (−157 counts last time).
+
+**Current loop:**
+
+| | Bench | Host simulation |
+|---|---|---|
+| Gains | kp 435 mV/A, ki 1258 V/(A·s) | same |
+| id 0 → 500 mA | final 500 mA (noise sd 11 mA), iq −1 mA (sd 12); 90 % at **1.05 ms**, overshoot 3 % | 90 % at 0.25 ms, overshoot 2 % |
+| id 500 → 0 mA | final 1 mA; 90 % at 1.0 ms, overshoot 0 % | 0.25 ms |
+| iq 0 → +50 mA, then disarm after 100 ms | final 50 mA (sd 17); 90 % at 1.3 ms; shaft did not turn (encoder 3655–3656) | — |
+| iq 0 → −50 mA, same | final −50 mA (sd 11); 90 % at 1.1 ms; shaft did not turn | — |
+| Faults; overruns; speed | none; 0; 0 rpm | — |
+| ISR exec max (powered mode 4) | **3049 cycles (17.9 µs)**, 350 cycles under the budget | — |
+
+- **The loop is stable and holds the references** with no cross-coupling, but it rises about 4× slower than the simulation.
+- The response jumps to about 35 % in 3 samples, then creeps at the integral rate. At a 0.5 A error, kp gives 0.22 V, almost exactly the measured inverter loss V0 = 234 mV, so the proportional action is largely lost and the integrator builds the rest.
+- The simulation has no dead-time model. **Remedy: dead-time compensation** (feed-forward of the measured V0 per phase in the direction of that phase's current, smoothed near zero current).
+- 50 mA × 0.022 Nm/A ≈ 1.1 mNm is below the cogging/stiction torque, so the free shaft stayed still.
+- WCET margin is thin; the largest single item is `sinf`+`cosf` (up to 772 cycles). A table or a combined sin/cos would recover margin.
+
 ## Next (needs the user's go)
 
 Stage 7 first power, in the roadmap order, stopping at the first surprise:
