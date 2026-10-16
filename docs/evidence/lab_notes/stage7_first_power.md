@@ -234,6 +234,33 @@ Same setup, shaft free (user's choice for the iq tests). Raw: `build/hil/stage7/
 
 Idle ISR 1890–1908 cycles (was about 2050); mode 4 with the stage off 2454–2522 (was 2603–2683); `vec_compare` PASS. Raw: `build/hil/stage7/dtc/`.
 
+### Dead-time compensation on the bench (`f396936`, DCBUS 15 V, 2026-10-15)
+
+Fresh boot on DCBUS (USB unplugged first), probe 63728769. Raw: `build/hil/stage7/dtc/` (`ident.log`, `id_steps.log`, `jl_dtc_run1.out`, `marks.txt`).
+
+**Identification run 6:**
+- Direction −1 (Δ −213 / −190), park A 60857 / B 60854 (friction half −10 counts).
+- **Rotation correction c = +58 counts** (+5°), load angle 124 counts (11°), final offset 4033. This boot parked in a different detent than the open-loop test (−157 then): the per-boot correction this step exists for.
+- R 0.200 Ω, V0 234 mV, L 71 µH; ISR max 2785 cycles.
+
+**Current loop:**
+
+| id step | DTC off | **DTC on** | Host (DTC on) |
+|---|---|---|---|
+| 0 → 0.5 A, 90 % | 1.05 ms | **0.10 ms** (86 % after 2 samples) | 0.15 ms |
+| 0.5 → 0 A, 90 % | 1.6 ms | **0.05 ms** | — |
+| Final / noise sd | 499 / 12 mA | 500 / 12 mA | — |
+| iq cross-coupling | −3 mA | −3 mA | 0 |
+
+- With compensation the loop is about 10× faster and matches the simulation.
+- A small tail remains from 86 % to 100 % over about 1 ms (residual dead-time mismatch).
+- No fault, 0 overruns, 0 missed periods.
+
+**ISR timing:**
+- Exec max in powered mode 4 with DTC reached **3279 cycles (19.3 µs)**, only 121 cycles under the budget (3049 before DTC/CORDIC).
+- Unpowered mode 4 measures about 2500 cycles; the boot bench gives 1344 for the control step.
+- `FLASH_ACR` = `0x00040704`: 4 wait states, prefetch, I-cache and D-cache all on. The remaining gap is most likely flash/cache misses: the ISR path no longer stays cached between periods. Next: measure the ISR segments with DWT and run the ISR path from CCM SRAM.
+
 ## Next (needs the user's go)
 
 Stage 7 first power, in the roadmap order, stopping at the first surprise:
