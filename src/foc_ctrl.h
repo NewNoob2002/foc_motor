@@ -28,9 +28,17 @@
  * - FOC_MODE_IDENT: automatic encoder alignment, R and L measurement; requires
  *   power already on. Ignores v_mv/theta_e, aborts on disarm, and publishes
  *   one terminal result through foc_ctrl_ident_get()/release().
- * - FOC_MODE_VOLTAGE, FOC_MODE_CURRENT: the Stage 6 modes (1 V at the
- *   encoder angle; the current loop). Only while the power stage is off;
- *   with it on they run as FOC_MODE_IDLE (snapshot.mode_refused).
+ * - FOC_MODE_VOLTAGE: Stage 6 1 V at the encoder angle, refused while powered.
+ * - FOC_MODE_CURRENT: powered dq loop at the calibrated rotor angle, permitted
+ *   only after successful per-boot identification with 0.02<R<2 ohm and
+ *   10 uH<L<5 mH. Gains are L*wc and R*wc, wc=2*pi*1000 Hz, with a 1 V
+ *   applied-vector/PI cap. Unpowered checks use raw encoder angle and placeholder
+ *   gains. Entry resets both references and integrals and takes step_seq as its
+ *   baseline. Write id_ma/iq_ma then change step_seq to latch clamped references;
+ *   a free capture buffer records dq currents, old/new refs and PRE old-reference
+ *   samples before the new command applies at top PRE. Busy captures defer the
+ *   next sequence until released. Speed above 205 counts/10 ms trips when powered.
+ *   Integrals reset while power is off.
  *
  * The power stage (Stage 7) switches on only through src/power_guard.c:
  * cmd.arm = FOC_CTRL_ARM_KEY, offsets calibrated, VBUS 14.0-16.5 V for
@@ -66,6 +74,14 @@
 /* One electrical revolution/s; 1/7 mechanical revolution/s with this motor. */
 #define FOC_CTRL_OL_RATE_MAX          4096
 
+/* Current-loop tuning and learning-bench reference/speed limits. */
+#define FOC_CTRL_CC_BW_HZ             1000U
+#define FOC_CTRL_ID_MAX_A             1.0f
+#define FOC_CTRL_IQ_MAX_A             0.5f
+#define FOC_CTRL_OVERSPEED_RPM        300U
+#define FOC_CTRL_SPEED_PERIODS        200U /* 10 ms at 20 kHz */
+#define FOC_CTRL_OVERSPEED_COUNTS     205  /* counts per 10 ms; trip strictly above */
+
 #define FOC_CTRL_CAPTURE_LEN          256U /* 12.8 ms */
 #define FOC_CTRL_CAPTURE_PRE          16U
 #define FOC_CTRL_CAPTURE_ON           128U /* 6.4 ms */
@@ -85,8 +101,10 @@ typedef struct {
     uint32_t mode;     /* foc_mode_t; unknown values run FOC_MODE_IDLE */
     uint32_t v_mv;     /* DC, open-loop and step vector length, mV */
     uint32_t theta_e;  /* fixed/start vector angle, electrical counts, 0..4095 = 0..2 pi */
-    uint32_t step_seq; /* change it to start one capture in FOC_MODE_STEP */
+    uint32_t step_seq; /* change it to start one capture in STEP or latch refs/capture in CURRENT */
     int32_t rate_e;    /* +20: open-loop electrical counts/s, clamped to +/-FOC_CTRL_OL_RATE_MAX */
+    int32_t id_ma;     /* +24: write both references, then change step_seq to latch */
+    int32_t iq_ma;     /* +28: mA, clamped to +/-FOC_CTRL_IQ_MAX_A */
 } foc_ctrl_cmd_t;
 
 extern volatile foc_ctrl_cmd_t foc_ctrl_cmd;
@@ -116,7 +134,12 @@ typedef struct {
     float ia_f;                /* A, low-pass (tau 51 ms) */
     float ib_f;
     float ic_f;
-    float i_d; /* A, this step */
+    float i_d_ref; /* A, latched reference */
+    float i_q_ref;
+    float cc_kp;          /* V/A */
+    float cc_ki;          /* V/(A s) */
+    int32_t speed_counts; /* signed mechanical encoder counts per 10 ms */
+    float i_d;            /* A, this step */
     float i_q;
     float v_d; /* V, applied from the next counter top */
     float v_q;
@@ -128,11 +151,17 @@ typedef struct {
 
 /* One step capture; sample k is the current measured at the counter top of period k. */
 typedef struct {
-    uint32_t seq;     /* cmd.step_seq that started it */
+    uint32_t seq;  /* cmd.step_seq that started it */
+    uint32_t kind; /* 0: IA/IC voltage step, 1: id/iq current step */
+    int32_t old_id_ma;
+    int32_t old_iq_ma;
+    int32_t new_id_ma;
+    int32_t new_iq_ma;
     uint32_t v_mv;    /* step size */
     uint32_t theta_e; /* step angle, electrical counts */
     float vbus;       /* V, at the start */
     bool power_on;    /* power stage on during the whole capture */
+    /* Storage is reused as id/iq in kind 1; samples retain signed mA units. */
     int16_t ia_ma[FOC_CTRL_CAPTURE_LEN];
     int16_t ic_ma[FOC_CTRL_CAPTURE_LEN];
 } foc_ctrl_capture_t;

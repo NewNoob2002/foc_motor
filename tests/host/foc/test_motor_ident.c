@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0 */
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "foc_test.h"
@@ -86,7 +87,7 @@ static motor_ident_t run_plant(plant_t* p) {
     uint32_t r_n = 0U;
     uint32_t angle_step = 0U;
     double initial_rotor = p->rotor;
-    static const uint32_t angles[] = {0U, IDENT_ALIGN_120, IDENT_ALIGN_240, 0U};
+    static const uint32_t angles[] = {0U, IDENT_ALIGN_120, IDENT_ALIGN_240, 0U, IDENT_ALIGN_120, 0U};
 
     motor_ident_start(&m);
     for (uint32_t k = 0U; k < IDENT_RUN_TIMEOUT_N + 2U; k++) {
@@ -161,12 +162,22 @@ static void test_accuracy(double r, double l, int direction, uint32_t enc0, doub
     CHECK_NEAR(result->r, r, r * 0.05);
     CHECK_NEAR(result->l, l, l * 0.10);
     CHECK(result->direction == direction);
-    uint32_t final_offset = result->enc_360 * IDENT_POLE_PAIRS % IDENT_COUNTS;
+    uint32_t forward_offset = result->enc_360 * IDENT_POLE_PAIRS % IDENT_COUNTS;
 
     if (direction < 0) {
-        final_offset = (IDENT_COUNTS - final_offset) % IDENT_COUNTS;
+        forward_offset = (IDENT_COUNTS - forward_offset) % IDENT_COUNTS;
     }
-    CHECK(result->offset_e == final_offset); /* Exactly zero at the recorded final position. */
+    double old_error = fabs(remainder((double)forward_offset - offset, (double)IDENT_COUNTS));
+    double new_error = fabs(remainder((double)result->offset_e - offset, (double)IDENT_COUNTS));
+
+    printf("two-sided dir %d: one-sided %.1f -> mean %.1f electrical counts, band %d\n", direction, old_error,
+           new_error, result->friction_half_e);
+    /* Stiction 0.1 produces about 65 electrical counts of one-sided error.
+     * Symmetric arrivals cancel it to within 8 counts (encoder quantum is 7).
+     */
+    CHECK(old_error >= 50.0);
+    CHECK(new_error <= 8.0 && new_error < old_error / 5.0);
+    CHECK(abs(result->friction_half_e) >= 50 && abs(result->friction_half_e) <= 75);
     /* The physical zero is only known to the stiction band asin(0.1), plus
      * encoder quantization; snapping exactly to the command would hide this.
      */
@@ -315,10 +326,10 @@ static void test_safety(void) {
     in.power_on = true;
     motor_ident_step(&m, &in, &out);
     CHECK(out.failed && out.v_d == 0.0f);
-    /* Four alignment holds, three decays, five R targets and one bias servo.
+    /* Six alignment holds, five decays, five R targets and one bias servo.
      * Include all arrival budgets, R settling/averages, bias dwell and L flush.
      */
-    const uint32_t phase_bound = (4U + 3U + IDENT_R_POINTS + 1U) * IDENT_SERVO_TIMEOUT_N + 4U * IDENT_ALIGN_HOLD_N
+    const uint32_t phase_bound = (6U + 5U + IDENT_R_POINTS + 1U) * IDENT_SERVO_TIMEOUT_N + 6U * IDENT_ALIGN_HOLD_N
                                  + IDENT_R_POINTS * (IDENT_R_SETTLE_N + IDENT_R_AVG_N) + IDENT_R_SETTLE_N
                                  + IDENT_L_CYCLES * 2U * IDENT_L_HALF + 2U;
 
@@ -382,17 +393,66 @@ static void test_alignment_validation(void) {
             CHECK(m.result.delta_a == direction * cases[k].a);
             CHECK(m.result.delta_b == direction * cases[k].b);
             if (cases[k].valid) {
-                CHECK(m.result.state == IDENT_RESISTANCE && !out.failed);
+                CHECK(m.result.state == IDENT_ALIGN_DECAY && !out.failed);
                 CHECK(m.result.direction == direction);
-                CHECK(((uint32_t)(direction * end * (int32_t)IDENT_POLE_PAIRS - (int32_t)m.result.offset_e)
-                       % IDENT_COUNTS)
-                      == 0U);
-                CHECK(out.theta_e_count == 0U && out.v_d == 0.25f);
+                CHECK(out.theta_e_count == 0U && out.v_d == 0.0f);
             } else {
                 CHECK(out.failed && out.v_d == 0.0f && m.result.fail_reason == IDENT_FAIL_ALIGNMENT);
                 CHECK(m.result.direction == 0 && m.result.offset_e == 0U);
             }
         }
+    }
+}
+
+/** Validate both extra moves independently, including sign, magnitude and circular-mean wrap. */
+static void test_two_sided_validation(void) {
+    const int32_t moves[][2] = {{195, -195}, {167, -223},  {223, -167}, {166, -195}, {224, -195}, {195, -166},
+                                {195, -224}, {-195, -195}, {195, 195},  {0, -195},   {195, 0}};
+
+    for (int32_t dir = -1; dir <= 1; dir += 2) {
+        for (size_t k = 0U; k < sizeof(moves) / sizeof(moves[0]); k++) {
+            motor_ident_t m;
+            motor_ident_out_t out;
+            uint32_t a = dir > 0 ? 4090U : 6U;
+            uint32_t mid = (a + (uint32_t)(dir * moves[k][0])) & 4095U;
+            uint32_t b = (mid + (uint32_t)(dir * moves[k][1])) & 4095U;
+            motor_ident_in_t in = {.i_d = 1.0f, .enc_count = b + 8192U, .power_on = true};
+
+            motor_ident_start(&m);
+            m.result.state = IDENT_ALIGN_BACK_ZERO;
+            m.result.direction = dir;
+            m.result.enc_360 = a + 4096U;
+            m.result.enc_return_120 = mid;
+            m.reached = true;
+            m.hold_n = IDENT_ALIGN_HOLD_N - 1U;
+            m.servo_v = 0.25f;
+            motor_ident_step(&m, &in, &out);
+            if (k < 3U) {
+                CHECK(!out.failed && m.result.state == IDENT_RESISTANCE);
+                double raw_a = (double)((a * 7U) & 4095U);
+                double raw_b = (double)((b * 7U) & 4095U);
+                double mean = raw_a + remainder(raw_b - raw_a, 4096.0) / 2.0;
+
+                CHECK(fabs(remainder((double)m.result.offset_e - dir * mean, 4096.0)) <= 1.0);
+                CHECK(out.theta_e_count == 0U && out.v_d == 0.25f);
+            } else {
+                CHECK(out.failed && m.result.fail_reason == IDENT_FAIL_ALIGNMENT && out.v_d == 0.0f);
+            }
+        }
+        motor_ident_t m;
+        motor_ident_out_t out;
+        motor_ident_in_t in = {.i_d = 1.0f, .enc_count = dir > 0 ? 6U : 4090U, .power_on = true};
+
+        motor_ident_start(&m);
+        m.result.state = IDENT_ALIGN_BACK_ZERO;
+        m.result.direction = dir;
+        m.result.enc_360 = dir > 0 ? 4090U : 6U;
+        m.result.enc_return_120 = (m.result.enc_360 + (uint32_t)(dir * 195)) & 4095U;
+        m.reached = true;
+        m.hold_n = IDENT_ALIGN_HOLD_N - 1U;
+        motor_ident_step(&m, &in, &out);
+        CHECK(!out.failed && m.result.offset_e == 0U);
+        CHECK(m.result.friction_half_e == dir * 42);
     }
 }
 
@@ -439,6 +499,9 @@ static void test_dirty_start(void) {
     CHECK(dirty.result.enc_120 == clean.result.enc_120);
     CHECK(dirty.result.enc_240 == clean.result.enc_240);
     CHECK(dirty.result.enc_360 == clean.result.enc_360);
+    CHECK(dirty.result.enc_return_120 == clean.result.enc_return_120);
+    CHECK(dirty.result.enc_zero_back == clean.result.enc_zero_back);
+    CHECK(dirty.result.friction_half_e == clean.result.friction_half_e);
     CHECK(dirty.result.delta_a == clean.result.delta_a);
     CHECK(dirty.result.delta_b == clean.result.delta_b);
     CHECK(dirty.result.direction == clean.result.direction);
@@ -454,6 +517,7 @@ static void test_dirty_start(void) {
     CHECK(dirty.result.l == clean.result.l);
     CHECK(dirty.result.ipp == clean.result.ipp);
     CHECK(dirty.theta_e_count == clean.theta_e_count);
+    CHECK(dirty.align_step == clean.align_step);
     CHECK(dirty.run_n == clean.run_n);
     CHECK(dirty.overcurrent_n == clean.overcurrent_n);
     CHECK(dirty.target_n == clean.target_n);
@@ -480,6 +544,9 @@ static void test_result_copy(void) {
         .enc_120 = 1234U,
         .enc_240 = 1429U,
         .enc_360 = 1624U,
+        .enc_return_120 = 1819U,
+        .enc_zero_back = 1640U,
+        .friction_half_e = 56,
         .delta_a = 195,
         .delta_b = 195,
         .direction = 1,
@@ -501,6 +568,8 @@ static void test_result_copy(void) {
     motor_ident_result_copy(&dst, &src);
     CHECK(dst.state == src.state && dst.fail_reason == src.fail_reason);
     CHECK(dst.enc_120 == src.enc_120 && dst.enc_240 == src.enc_240 && dst.enc_360 == src.enc_360);
+    CHECK(dst.enc_return_120 == src.enc_return_120 && dst.enc_zero_back == src.enc_zero_back);
+    CHECK(dst.friction_half_e == src.friction_half_e);
     CHECK(dst.delta_a == src.delta_a && dst.delta_b == src.delta_b);
     CHECK(dst.direction == src.direction && dst.offset_e == src.offset_e);
     for (uint32_t k = 0U; k < IDENT_R_POINTS; k++) {
@@ -541,6 +610,7 @@ int main(void) {
     test_safety();
     test_alignment_failures();
     test_alignment_validation();
+    test_two_sided_validation();
     test_l_failures();
     test_nonlinear_resistance();
     return foc_test_result("test_motor_ident");

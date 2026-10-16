@@ -52,12 +52,13 @@
  */
 #define PWM_ADC_FAULT_OVERRUN       0x01U /* PWM_ADC_OVERRUN_FAULT_COUNT overruns in a row */
 #define PWM_ADC_FAULT_DMA_ERROR     0x02U
-#define PWM_ADC_FAULT_OVERCURRENT   0x04U /* from the control step (power_guard) */
-#define PWM_ADC_FAULT_VBUS          0x08U /* from the control step (power_guard) */
-#define PWM_ADC_FAULT_PINS          0x10U /* pin invariant broken when switching on */
-#define PWM_ADC_FAULT_ADC_OVERRUN   0x20U /* OVR at ISR entry, DMA samples may be stale or shifted */
-#define PWM_ADC_FAULT_NUMERIC       0x40U /* a duty is outside [0, 1], including NaN */
-#define PWM_ADC_FAULT_ISR_GAP       0x80U /* powered ISR-entry gap exceeds PWM_ADC_GAP_FAULT_CYCLES */
+#define PWM_ADC_FAULT_OVERCURRENT   0x04U  /* from the control step (power_guard) */
+#define PWM_ADC_FAULT_VBUS          0x08U  /* from the control step (power_guard) */
+#define PWM_ADC_FAULT_PINS          0x10U  /* pin invariant broken when switching on */
+#define PWM_ADC_FAULT_ADC_OVERRUN   0x20U  /* OVR at ISR entry, DMA samples may be stale or shifted */
+#define PWM_ADC_FAULT_NUMERIC       0x40U  /* a duty is outside [0, 1], including NaN */
+#define PWM_ADC_FAULT_ISR_GAP       0x80U  /* powered ISR-entry gap exceeds PWM_ADC_GAP_FAULT_CYCLES */
+#define PWM_ADC_FAULT_OVERSPEED     0x100U /* powered current loop above the mechanical speed limit */
 
 /*
  * High-side duty limits. The bootstrap capacitor only charges while the low

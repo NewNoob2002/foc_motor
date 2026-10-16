@@ -24,6 +24,9 @@ void motor_ident_start(motor_ident_t* m) {
     reset->result.enc_120 = 0U;
     reset->result.enc_240 = 0U;
     reset->result.enc_360 = 0U;
+    reset->result.enc_return_120 = 0U;
+    reset->result.enc_zero_back = 0U;
+    reset->result.friction_half_e = 0;
     reset->result.delta_a = 0;
     reset->result.delta_b = 0;
     reset->result.direction = 0;
@@ -39,6 +42,7 @@ void motor_ident_start(motor_ident_t* m) {
     reset->result.l = 0.0f;
     reset->result.ipp = 0.0f;
     reset->theta_e_count = 0U;
+    reset->align_step = 0U;
     reset->run_n = 0U;
     reset->overcurrent_n = 0U;
     reset->target_n = 0U;
@@ -64,6 +68,9 @@ void motor_ident_result_copy(volatile motor_ident_result_t* dst, const motor_ide
     dst->enc_120 = src->enc_120;
     dst->enc_240 = src->enc_240;
     dst->enc_360 = src->enc_360;
+    dst->enc_return_120 = src->enc_return_120;
+    dst->enc_zero_back = src->enc_zero_back;
+    dst->friction_half_e = src->friction_half_e;
     dst->delta_a = src->delta_a;
     dst->delta_b = src->delta_b;
     dst->direction = src->direction;
@@ -130,7 +137,7 @@ static int32_t align_delta(uint32_t from, uint32_t to) {
     return delta;
 }
 
-/** Check two forced positive electrical moves and compute the final zero-angle offset. */
+/** Validate the first two forced positive electrical moves and retain the forward zero park A. */
 static void align_result(motor_ident_t* m, uint32_t enc) {
     motor_ident_result_t* r = &m->result;
 
@@ -150,9 +157,32 @@ static void align_result(motor_ident_t* m, uint32_t enc) {
         return;
     }
     r->direction = r->delta_a > 0 ? 1 : -1;
-    uint32_t raw_offset = ((r->enc_360 % IDENT_COUNTS) * IDENT_POLE_PAIRS) % IDENT_COUNTS;
+    next_target(m, IDENT_ALIGN_DECAY);
+    m->servo_v = 0.0f;
+}
 
-    r->offset_e = r->direction > 0 ? raw_offset : (IDENT_COUNTS - raw_offset) % IDENT_COUNTS;
+/** Validate the extra positive/negative moves and circularly average the two zero parks. */
+static void align_two_sided(motor_ident_t* m, uint32_t enc) {
+    motor_ident_result_t* r = &m->result;
+    int32_t forward = align_delta(r->enc_360, r->enc_return_120);
+    int32_t backward = align_delta(r->enc_return_120, enc);
+
+    r->enc_zero_back = enc;
+    if (forward * r->direction <= 0 || backward * r->direction >= 0
+        || fabsf(fabsf((float)(forward * (int32_t)IDENT_POLE_PAIRS)) - (float)IDENT_ALIGN_120)
+               > (float)IDENT_ALIGN_TOL_E
+        || fabsf(fabsf((float)(backward * (int32_t)IDENT_POLE_PAIRS)) - (float)IDENT_ALIGN_120)
+               > (float)IDENT_ALIGN_TOL_E) {
+        motor_ident_abort(m, IDENT_FAIL_ALIGNMENT);
+        return;
+    }
+    uint32_t a = ((r->enc_360 % IDENT_COUNTS) * IDENT_POLE_PAIRS) % IDENT_COUNTS;
+    uint32_t b = ((enc % IDENT_COUNTS) * IDENT_POLE_PAIRS) % IDENT_COUNTS;
+
+    r->friction_half_e = align_delta(a, b) / 2;
+    uint32_t mean = (a + (uint32_t)r->friction_half_e) & (IDENT_COUNTS - 1U);
+
+    r->offset_e = r->direction > 0 ? mean : (IDENT_COUNTS - mean) % IDENT_COUNTS;
     next_target(m, IDENT_RESISTANCE);
 }
 
@@ -311,6 +341,8 @@ void motor_ident_step(motor_ident_t* m, const motor_ident_in_t* in, motor_ident_
         case IDENT_ALIGN_SECOND:
         case IDENT_ALIGN_THIRD:
         case IDENT_ALIGN_ZERO:
+        case IDENT_ALIGN_RETURN_120:
+        case IDENT_ALIGN_BACK_ZERO:
             servo(m, in->i_d, IDENT_ALIGN_A);
             if (m->result.state == IDENT_FAILED) {
                 break;
@@ -318,11 +350,15 @@ void motor_ident_step(motor_ident_t* m, const motor_ident_in_t* in, motor_ident_
             if (m->reached && ++m->hold_n >= IDENT_ALIGN_HOLD_N) {
                 if (m->result.state == IDENT_ALIGN_ZERO) {
                     align_result(m, in->enc_count);
+                } else if (m->result.state == IDENT_ALIGN_BACK_ZERO) {
+                    align_two_sided(m, in->enc_count);
                 } else {
                     if (m->result.state == IDENT_ALIGN_SECOND) {
                         m->result.enc_120 = in->enc_count;
                     } else if (m->result.state == IDENT_ALIGN_THIRD) {
                         m->result.enc_240 = in->enc_count;
+                    } else if (m->result.state == IDENT_ALIGN_RETURN_120) {
+                        m->result.enc_return_120 = in->enc_count;
                     }
                     /* The first zero-degree park is deliberately not used for direction.
                      * With sinusoidal torque and sufficient settling, it leaves the rotor
@@ -339,19 +375,32 @@ void motor_ident_step(motor_ident_t* m, const motor_ident_in_t* in, motor_ident_
             voltage = m->servo_v;
             break;
         case IDENT_ALIGN_DECAY:
-            /* Remove excitation and verify decay before each +120-degree switch. */
+            /* Remove excitation and verify decay before every angle switch. */
             servo(m, in->i_d, 0.0f);
             m->servo_v = 0.0f;
             if (m->reached && m->result.state != IDENT_FAILED) {
-                if (m->theta_e_count == 0U) {
-                    m->theta_e_count = IDENT_ALIGN_120;
-                    next_target(m, IDENT_ALIGN_SECOND);
-                } else if (m->theta_e_count == IDENT_ALIGN_120) {
-                    m->theta_e_count = IDENT_ALIGN_240;
-                    next_target(m, IDENT_ALIGN_THIRD);
-                } else {
-                    m->theta_e_count = 0U;
-                    next_target(m, IDENT_ALIGN_ZERO);
+                m->align_step++;
+                switch (m->align_step) {
+                    case 1U:
+                        m->theta_e_count = IDENT_ALIGN_120;
+                        next_target(m, IDENT_ALIGN_SECOND);
+                        break;
+                    case 2U:
+                        m->theta_e_count = IDENT_ALIGN_240;
+                        next_target(m, IDENT_ALIGN_THIRD);
+                        break;
+                    case 3U:
+                        m->theta_e_count = 0U;
+                        next_target(m, IDENT_ALIGN_ZERO);
+                        break;
+                    case 4U:
+                        m->theta_e_count = IDENT_ALIGN_120;
+                        next_target(m, IDENT_ALIGN_RETURN_120);
+                        break;
+                    default:
+                        m->theta_e_count = 0U;
+                        next_target(m, IDENT_ALIGN_BACK_ZERO);
+                        break;
                 }
             }
             break;

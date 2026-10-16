@@ -145,7 +145,121 @@ static void test_no_bus(void) {
     }
 }
 
+/** Compare the capped loop with an independent PI/transform chain and both voltage limits. */
+static void test_limited_chain(void) {
+    unsigned int seed = 4321U;
+
+    for (uint32_t k = 0U; k < 2000U; k++) {
+        float bus = foc_test_rand(&seed, 0.1f, 20.0f);
+        float cap = foc_test_rand(&seed, 0.01f, 2.0f);
+        float axis = fminf(cap, bus * 0.57735027f);
+        foc_current_t cc = make_cc(0.44f, 1260.0f);
+        foc_current_t manual = cc;
+        foc_abc_t currents = {.a = foc_test_rand(&seed, -2.0f, 2.0f), .b = 0.0f, .c = 0.0f};
+        foc_dq_t ref = {.d = foc_test_rand(&seed, -5.0f, 5.0f), .q = foc_test_rand(&seed, -5.0f, 5.0f)};
+        foc_sincos_t sc = sc_of(foc_test_rand(&seed, -3.14f, 3.14f));
+        foc_current_out_t out;
+        foc_abc_t duty;
+
+        manual.pi_d.out_min = manual.pi_q.out_min = -axis;
+        manual.pi_d.out_max = manual.pi_q.out_max = axis;
+        foc_dq_t measured = foc_park(foc_clarke(currents), sc);
+        foc_dq_t volts = {.d = foc_pi_step(&manual.pi_d, ref.d - measured.d, DT),
+                          .q = foc_pi_step(&manual.pi_q, ref.q - measured.q, DT)};
+        float length = hypotf(volts.d, volts.q);
+
+        if (length > cap) {
+            volts.d *= cap / length;
+            volts.q *= cap / length;
+        }
+        (void)foc_svpwm(foc_inv_park(volts, sc), bus, &duty);
+        foc_current_step_lim(&cc, currents, sc, ref, bus, DT, cap, &out);
+        CHECK_NEAR(out.i_dq.d, measured.d, 1e-6);
+        CHECK_NEAR(out.i_dq.q, measured.q, 1e-6);
+        CHECK_NEAR(out.v_dq.d, volts.d, 1e-6);
+        CHECK_NEAR(out.v_dq.q, volts.q, 1e-6);
+        CHECK_NEAR(out.duty.a, duty.a, 1e-6);
+        CHECK_NEAR(out.duty.b, duty.b, 1e-6);
+        CHECK_NEAR(out.duty.c, duty.c, 1e-6);
+        CHECK(fabsf(out.v_dq.d) <= axis + 1e-6f && fabsf(out.v_dq.q) <= axis + 1e-6f);
+        CHECK(hypotf(out.v_dq.d, out.v_dq.q) <= cap + 1e-6f);
+        CHECK(fabsf(cc.pi_d.integral) <= axis && fabsf(cc.pi_q.integral) <= axis);
+    }
+}
+
+/** Saturation must keep integrals within the applied cap and recover promptly on reversal. */
+static void test_limited_recovery(void) {
+    foc_current_t cc = make_cc(0.44f, 1260.0f);
+    foc_abc_t zero = {0};
+    foc_dq_t ref = {.d = 10.0f, .q = -10.0f};
+    foc_current_out_t out;
+
+    for (uint32_t k = 0U; k < 1000U; k++) {
+        foc_current_step_lim(&cc, zero, sc_of(0.0f), ref, 15.0f, DT, 1.0f, &out);
+    }
+    CHECK(out.limited);
+    CHECK_NEAR(hypotf(out.v_dq.d, out.v_dq.q), 1.0, 1e-6);
+    CHECK(cc.pi_d.integral == 1.0f && cc.pi_q.integral == -1.0f);
+    ref.d = -0.3f;
+    ref.q = 0.3f;
+    for (uint32_t k = 0U; k < 60U; k++) {
+        foc_current_step_lim(&cc, zero, sc_of(0.0f), ref, 15.0f, DT, 1.0f, &out);
+    }
+    CHECK(out.v_dq.d < 0.0f && out.v_dq.q > 0.0f && !out.limited);
+    const float invalid[] = {0.0f, -1.0f, NAN};
+
+    for (size_t k = 0U; k < sizeof(invalid) / sizeof(invalid[0]); k++) {
+        float integral = cc.pi_d.integral;
+
+        foc_current_step_lim(&cc, zero, sc_of(0.0f), ref, invalid[k], DT, 1.0f, &out);
+        CHECK(out.v_dq.d == 0.0f && out.v_dq.q == 0.0f && out.limited);
+        CHECK(out.duty.a == 0.5f && out.duty.b == 0.5f && out.duty.c == 0.5f);
+        CHECK(cc.pi_d.integral == integral);
+        foc_current_step_lim(&cc, zero, sc_of(0.0f), ref, 15.0f, DT, invalid[k], &out);
+        CHECK(out.v_dq.d == 0.0f && out.v_dq.q == 0.0f && out.limited);
+        CHECK(cc.pi_d.integral == integral);
+    }
+}
+
+/** Simulate a locked-rotor RL axis with one full PWM period of command delay. */
+static void test_locked_rotor(bool d_axis) {
+    const double r = 0.2;
+    const double l = 70e-6;
+    const double decay = exp(-r * (double)DT / l);
+    foc_current_t cc = make_cc((float)(l * 6283.18530718), (float)(r * 6283.18530718));
+    double current = 0.0;
+    double pending = 0.0;
+    double peak = 0.0;
+    uint32_t rise = 0U;
+
+    for (uint32_t k = 0U; k < 200U; k++) {
+        foc_dq_t ref = {.d = d_axis ? 0.3f : 0.0f, .q = d_axis ? 0.0f : 0.3f};
+        foc_dq_t measured = {.d = d_axis ? (float)current : 0.0f, .q = d_axis ? 0.0f : (float)current};
+        foc_abc_t abc = foc_inv_clarke(foc_inv_park(measured, sc_of(0.0f)));
+        foc_current_out_t out;
+
+        foc_current_step_lim(&cc, abc, sc_of(0.0f), ref, 15.0f, DT, 1.0f, &out);
+        current = current * decay + pending / r * (1.0 - decay);
+        pending = d_axis ? out.v_dq.d : out.v_dq.q;
+        if (current >= 0.27 && rise == 0U) {
+            rise = k + 1U;
+        }
+        peak = fmax(peak, current);
+    }
+    double rise_ms = (double)rise * (double)DT * 1000.0;
+    double overshoot = (peak / 0.3 - 1.0) * 100.0;
+
+    printf("locked rotor %s: rise90 %.3f ms, overshoot %.3f %%\n", d_axis ? "id" : "iq", rise_ms, overshoot);
+    CHECK(rise > 0U && rise_ms <= 0.6);
+    CHECK(overshoot < 20.0);
+    CHECK_NEAR(current, 0.3, 1e-5);
+}
+
 int main(void) {
+    test_limited_chain();
+    test_limited_recovery();
+    test_locked_rotor(false);
+    test_locked_rotor(true);
     test_matches_manual_chain();
     test_zero_error();
     test_saturates_at_bus_limit();

@@ -3,6 +3,7 @@
 #include "foc_bench.h"
 
 #include "cycles.h"
+#include "foc_ctrl_motion.h"
 #include "foc_vectors.h"
 #include "motor_ident.h"
 
@@ -15,6 +16,7 @@
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/util.h>
 
+#include "foc/foc_current.h"
 #include "foc/foc_pi.h"
 #include "foc/foc_svpwm.h"
 #include "foc/foc_transform.h"
@@ -45,6 +47,7 @@ typedef enum {
     STAGE_SVPWM,      /* SVPWM */
     STAGE_STEP,       /* foc_vector_step: all of the above in one call */
     STAGE_SINCOS_DBL, /* sin + cos in double, for comparison */
+    STAGE_CURRENT,    /* limited mode-4 kernel plus calibrated angle and speed window */
     STAGE_IDENT_START,
     STAGE_IDENT_SERVO,
     STAGE_IDENT_R_FIT,
@@ -63,6 +66,7 @@ static const char* const stage_names[STAGE_COUNT] = {
     [STAGE_SVPWM] = "svpwm",
     [STAGE_STEP] = "full step",
     [STAGE_SINCOS_DBL] = "sin+cos double",
+    [STAGE_CURRENT] = "current capped",
     [STAGE_IDENT_START] = "ident start",
     [STAGE_IDENT_SERVO] = "ident servo",
     [STAGE_IDENT_R_FIT] = "ident R fit",
@@ -91,6 +95,48 @@ static struct {
 } ctx;
 
 static span_t spans[STAGE_COUNT];
+
+/* Synthetic mode-4 numeric state; it never writes the debugger command block or BSP. */
+static struct {
+    foc_current_t cc;
+    foc_ctrl_speed_t speed;
+    uint32_t encoder;
+    foc_current_out_t out;
+} current_ctx;
+
+/** Time the production capped current kernel with the same calibrated-angle and speed helpers. */
+static __noinline void run_current(void) {
+    foc_ctrl_speed_step(&current_ctx.speed, current_ctx.encoder);
+    uint32_t angle = foc_ctrl_rotor_angle(current_ctx.encoder, -1, 4095U);
+    float theta = (float)angle * 0.0015339808f;
+    foc_sincos_t sc;
+    foc_abc_t abc;
+    foc_dq_t ref;
+
+    sc.sin_theta = sinf(theta);
+    sc.cos_theta = cosf(theta);
+    abc.a = ctx.in->ia;
+    abc.b = -(ctx.in->ia + ctx.in->ic);
+    abc.c = ctx.in->ic;
+    ref.d = ctx.in->id_ref;
+    ref.q = ctx.in->iq_ref;
+    foc_current_step_lim(&current_ctx.cc, abc, sc, ref, ctx.in->vbus, FOC_VECTORS_DT_S, 1.0f, &current_ctx.out);
+}
+
+/** Prepare both speed-window rollover and ordinary samples outside the measured interval. */
+static void prepare_current(size_t vector) {
+    current_ctx.cc.pi_d.kp = 70e-6f * 6283.18530718f;
+    current_ctx.cc.pi_d.ki = 0.2f * 6283.18530718f;
+    current_ctx.cc.pi_q.kp = current_ctx.cc.pi_d.kp;
+    current_ctx.cc.pi_q.ki = current_ctx.cc.pi_d.ki;
+    current_ctx.cc.pi_d.integral = ctx.in->int_d;
+    current_ctx.cc.pi_q.integral = ctx.in->int_q;
+    current_ctx.encoder = (uint32_t)vector * 4095U / FOC_VECTORS_COUNT;
+    current_ctx.speed.previous = current_ctx.encoder - 1U;
+    current_ctx.speed.periods = (vector & 1U) != 0U ? FOC_CTRL_SPEED_PERIODS - 1U : 0U;
+    current_ctx.speed.delta = 204;
+    current_ctx.speed.counts = 0;
+}
 
 /* Synthetic numeric state only: these stages never call the BSP or change commands. */
 static struct {
@@ -230,6 +276,7 @@ static void (*const stage_fns[STAGE_COUNT])(void) = {
     [STAGE_SVPWM] = run_svpwm,
     [STAGE_STEP] = run_step,
     [STAGE_SINCOS_DBL] = run_sincos_dbl,
+    [STAGE_CURRENT] = run_current,
     [STAGE_IDENT_START] = run_ident_start,
     [STAGE_IDENT_SERVO] = run_ident_step,
     [STAGE_IDENT_R_FIT] = run_ident_step,
@@ -269,6 +316,9 @@ static void measure(void) {
 
             ctx.in = &foc_vectors_in[i];
             for (size_t s = 0; s < STAGE_COUNT; s++) {
+                if (s == STAGE_CURRENT) {
+                    prepare_current(i);
+                }
                 if (s >= STAGE_IDENT_START) {
                     prepare_ident((stage_t)s, i);
                 }
@@ -321,6 +371,11 @@ void foc_bench_run(void) {
     LOG_INF("full step max %u cycles = %u.%02u us; budget %u cycles (20 us): %s", step_max, step_max / CYCLES_PER_US,
             (step_max % CYCLES_PER_US) * 100U / CYCLES_PER_US, STEP_BUDGET_CYCLES,
             step_max < STEP_BUDGET_CYCLES ? "under" : "OVER");
+
+    uint32_t current_max = MAX(spans[STAGE_CURRENT].max_warm, spans[STAGE_CURRENT].max_cold);
+
+    LOG_INF("mode 4 kernel+angle+speed max %u cycles; complete ISR budget %u (check ISR telemetry)", current_max,
+            STEP_BUDGET_CYCLES);
 
     /* The results are recomputed here, outside the timing loop, so the dump does not depend on it. */
     for (uint32_t i = 0; i < FOC_VECTORS_COUNT; i++) {
