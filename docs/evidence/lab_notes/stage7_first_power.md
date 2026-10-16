@@ -331,6 +331,49 @@ Flash on USB power (VBUS 35 mV checked live), SHA-256 `000468a86dffb1b87f6665d02
 
 `vec_compare` PASS.
 
+### Speed loop and safe stops (`6d856c1`, DCBUS 15 V, 2026-10-15)
+
+Shaft free, motor body clamped, probe 63728769. Raw: `build/hil/stage7/speed/` (`ident.log`, `speed.log`, `ripple.log`, `demo1.log`, `demo2.log`, `ident3.log`, `demo3.log`, `jl_speed_run.out`, `marks.txt`).
+
+**Identification runs 10 and 11:**
+
+| Run | Moves | Rotation c | R | L |
+|---|---|---|---|---|
+| 10 | −192 / −191 | +58 | 0.200 Ω | 70 µH |
+| 11, after the reset | −199 / −182 | −113 | 0.198 Ω | 71 µH |
+
+Both passed.
+
+**Speed loop** (mode 7, DTC on). 10 Hz telemetry aliases the ripple; the 1 kHz captures are the reference:
+
+| Reference | Mean (1 kHz capture) | Ripple | Dominant frequency | Electrical frequency |
+|---|---|---|---|---|
+| 60 rpm | 63.8 rpm | sd 19.3 rpm (±24) | 15 Hz | 7.4 Hz |
+| 100 rpm | 99.6 rpm | sd 14.5 rpm (±18) | 23 Hz | 11.6 Hz |
+| −60 rpm | −62.7 rpm (10 Hz) | sd 22.6 rpm | — | — |
+| 100 rpm, 27 s hold | 103.1 rpm (10 Hz) | sd 15.8 rpm | — | — |
+
+- Step 60 → 100 rpm: about 30 ms to the new level, then the same ripple. Stopped cleanly at 0 rpm.
+- ISR max **2122 cycles**, 0 overruns, no fault.
+- **The motor holds a speed in the mean**, forward and backward.
+- **The ripple is position-locked at twice the electrical frequency**, at both speeds, so it is not a control-loop resonance.
+- It implies a torque disturbance of about 3–4 mNm, comparable to the drive torque here (iq about 0.1 A ≈ 2 mNm) and to the stiction seen earlier.
+- Likely source: magnet-to-magnet variation of the cogging torque (14 per turn = 2× electrical). An IA/IC gain mismatch also gives 2× electrical, but the measured mismatch (about 3 %) is far too small at 0.1 A.
+- The simulation (cogging only at 84 per turn) predicted about 1 rpm and does not model this.
+- **Known limitation.** The remedy is a learned cogging feed-forward (later work).
+
+**Safe stops while running at 100 rpm:**
+
+| Demo | Result |
+|---|---|
+| 1. Disarm (arm key cleared) | SD high while running, **low on the next J-Link read** after the write; PC0–PC2 analog; the rotor coasted from about 108 rpm to 0 within about 0.3 s; no fault |
+| 2. Forced fault (3 consecutive forced 4000-cycle ISR overruns) | **fault 0x1 latched** within the 50 ms read window: overruns 3, SD low, PC analog, BDTR 0 (MOE off), CCR 2125; cleared only by reset (J-Link reset with the stage already off) |
+| 3. Supply output button (user) | The motor stopped (all power lost). The UART log ends within about 0.1 s after the last line (VBUS still 15.04 V at the previous report). The board's logic, fed from the same bus, browned out before the next telemetry line, so **the firmware VBUS trip (< 12 V for 3 periods) could not be observed this way**. Physically safe: without the bus nothing can drive the motor. Showing the trip needs a scope on VBUS and an SD pin |
+
+Findings:
+- After a latched fault, the speed and rot telemetry freezes at the last value (99.6 rpm), because the skipped control step no longer updates the snapshot. Misleading, not unsafe; to fix.
+- In mode 7 with the stage off, the speed PI keeps integrating (iq_ref 500 mA). Harmless (the stage is off; re-arming needs idle, which resets the loop).
+
 ## Next (needs the user's go)
 
 Stage 7 first power, in the roadmap order, stopping at the first surprise:
